@@ -1,0 +1,341 @@
+/* Card to Lorebook — wizard + settings styles */
+
+/* ============================================================ */
+/* Toolbar button — slots into ST's #rm_print_characters_pagination */
+/* ============================================================ */
+#cardToLoreButton {
+    margin-left: 4px;
+}
+#cardToLoreButton.bulkEditOptionElement {
+    /* Toggled visible by ST's bulk mode (display:none when off) */
+}
+
+/* ============================================================ */
+/* Wizard popup */
+/* ============================================================ */
+.c2l-wizard {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 720px;
+    max-width: 100%;
+}
+
+.c2l-wizard .c2l-stepbar {
+    display: flex;
+    gap: 4px;
+    padding: 0 0 6px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    font-size: 0.85em;
+    flex-wrap: wrap;
+}
+.c2l-wizard .c2l-step-pill {
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: var(--black30a, rgba(0, 0, 0, 0.2));
+    opacity: 0.55;
+    letter-spacing: 0.02em;
+}
+.c2l-wizard .c2l-step-pill.active {
+    background: var(--SmartThemeBlurTintColor);
+    opacity: 1;
+    font-weight: 600;
+}
+.c2l-wizard .c2l-step-pill.done {
+    opacity: 0.85;
+}
+.c2l-wizard .c2l-step-pill.done::before {
+    content: '✓ ';
+    color: var(--success, #4caf50);
+}
+
+.c2l-wizard h3 {
+    margin: 4px 0 2px;
+    font-size: 1.05em;
+}
+.c2l-wizard .c2l-hint {
+    opacity: 0.7;
+    font-size: 0.85em;
+    margin: 0 0 6px;
+}
+
+.c2l-wizard .c2l-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.c2l-wizard .c2l-row > label {
+    min-width: 0;
+    flex: 1;
+}
+.c2l-wizard .c2l-row > label > span {
+    display: block;
+    font-size: 0.85em;
+    opacity: 0.75;
+    margin: 0 0 3px;
+}
+
+.c2l-wizard .c2l-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.9em;
+    padding: 3px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    user-select: none;
+}
+.c2l-wizard .c2l-toggle:hover {
+    background: var(--black30a, rgba(0, 0, 0, 0.2));
+}
+
+.c2l-wizard .c2l-field-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 2px 12px;
+}
+
+.c2l-wizard .c2l-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    padding-top: 10px;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+    margin-top: 6px;
+    flex-wrap: wrap;
+}
+
+.c2l-wizard .c2l-actions .menu_button.danger {
+    color: var(--warning, #d7a900);
+}
+
+/* ============================================================ */
+/* Source review list (step 1) */
+/* ============================================================ */
+.c2l-source-list {
+    max-height: 360px;
+    overflow-y: auto;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    padding: 4px;
+    background: var(--SmartThemeBlurTintColor);
+}
+.c2l-source-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--black20a, rgba(0, 0, 0, 0.08));
+    font-size: 0.9em;
+}
+.c2l-source-row:last-child {
+    border-bottom: 0;
+}
+.c2l-source-row img {
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    object-fit: cover;
+    flex-shrink: 0;
+}
+.c2l-source-row .c2l-source-name {
+    flex: 1;
+    word-break: break-word;
+    font-weight: 500;
+}
+.c2l-source-row .c2l-source-tag {
+    font-size: 0.75em;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--black30a, rgba(0, 0, 0, 0.2));
+    opacity: 0.85;
+}
+.c2l-source-row .c2l-source-tag.book {
+    color: var(--success, #4caf50);
+}
+.c2l-source-row .c2l-source-tag.empty {
+    color: var(--warning, #d7a900);
+}
+
+/* ============================================================ */
+/* Progress queue (step 5) */
+/* ============================================================ */
+.c2l-progress-list {
+    max-height: 360px;
+    overflow-y: auto;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    padding: 4px;
+    background: var(--SmartThemeBlurTintColor);
+    font-family: var(--monoFontFamily, monospace);
+    font-size: 0.85em;
+}
+.c2l-progress-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 6px;
+    border-bottom: 1px solid var(--black20a);
+}
+.c2l-progress-row:last-child { border-bottom: 0; }
+.c2l-progress-row .c2l-status-icon {
+    width: 16px;
+    text-align: center;
+    flex-shrink: 0;
+}
+.c2l-progress-row .c2l-status-icon.queued { opacity: 0.4; }
+.c2l-progress-row .c2l-status-icon.running { color: var(--info, #2196f3); }
+.c2l-progress-row .c2l-status-icon.done { color: var(--success, #4caf50); }
+.c2l-progress-row .c2l-status-icon.failed { color: var(--warning, #d7a900); }
+.c2l-progress-row .c2l-status-icon.cancelled { opacity: 0.4; }
+.c2l-progress-row .c2l-progress-name {
+    flex: 1;
+    word-break: break-word;
+}
+.c2l-progress-row .c2l-progress-detail {
+    opacity: 0.65;
+    font-size: 0.9em;
+}
+
+.c2l-progress-summary {
+    padding: 6px 8px;
+    background: var(--SmartThemeBlurTintColor);
+    border-radius: 6px;
+    font-size: 0.85em;
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+.c2l-progress-summary > span > b {
+    font-weight: 700;
+}
+
+/* ============================================================ */
+/* Preview table (step 6) */
+/* ============================================================ */
+.c2l-preview-table {
+    max-height: 460px;
+    overflow-y: auto;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    background: var(--SmartThemeBlurTintColor);
+}
+.c2l-preview-row {
+    border-bottom: 1px solid var(--black20a);
+    padding: 8px;
+}
+.c2l-preview-row:last-child { border-bottom: 0; }
+.c2l-preview-row.dropped {
+    opacity: 0.4;
+    text-decoration: line-through;
+}
+.c2l-preview-row .c2l-preview-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+}
+.c2l-preview-row .c2l-preview-head input[type="text"] {
+    flex: 1;
+    min-width: 140px;
+}
+.c2l-preview-row .c2l-preview-tag {
+    font-size: 0.72em;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--black30a);
+    opacity: 0.85;
+}
+.c2l-preview-row textarea {
+    width: 100%;
+    min-height: 110px;
+    font-family: inherit;
+    font-size: 0.9em;
+}
+.c2l-preview-row .c2l-preview-meta {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+    font-size: 0.82em;
+    align-items: center;
+}
+.c2l-preview-row .c2l-preview-meta > label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.c2l-preview-row .c2l-preview-meta input[type="number"] {
+    width: 60px;
+}
+.c2l-preview-row .c2l-preview-drop {
+    margin-left: auto;
+}
+
+/* ============================================================ */
+/* Settings page */
+/* ============================================================ */
+#card_to_lore_settings .c2l-section {
+    margin: 8px 0;
+    padding: 8px 10px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    background: var(--SmartThemeBlurTintColor);
+}
+#card_to_lore_settings .c2l-section h4 {
+    margin: 0 0 6px;
+    font-size: 0.95em;
+}
+#card_to_lore_settings .c2l-profile-list {
+    margin: 4px 0 6px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 4px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+#card_to_lore_settings .c2l-profile-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--black20a);
+}
+#card_to_lore_settings .c2l-profile-row:last-child { border-bottom: 0; }
+#card_to_lore_settings .c2l-profile-row:hover {
+    background: var(--black30a, rgba(0, 0, 0, 0.2));
+}
+#card_to_lore_settings .c2l-profile-row.active {
+    background: var(--SmartThemeQuoteColor, rgba(0, 100, 200, 0.15));
+}
+#card_to_lore_settings .c2l-profile-row .c2l-profile-name {
+    flex: 1;
+    font-weight: 500;
+}
+#card_to_lore_settings .c2l-profile-row.builtin .c2l-profile-name::after {
+    content: ' (built-in)';
+    opacity: 0.5;
+    font-size: 0.8em;
+    font-weight: 400;
+}
+
+#card_to_lore_settings .c2l-profile-actions {
+    display: flex;
+    gap: 6px;
+    margin: 4px 0;
+}
+
+#card_to_lore_settings textarea {
+    width: 100%;
+    font-family: inherit;
+    font-size: 0.9em;
+}
+
+#card_to_lore_settings .c2l-field-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 2px 12px;
+    margin: 4px 0;
+}

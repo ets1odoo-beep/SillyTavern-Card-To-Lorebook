@@ -1,0 +1,104 @@
+<div id="card_to_lore_settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>Card to Lorebook</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+
+            <div class="c2l-section">
+                <label class="checkbox_label">
+                    <input id="c2l-enabled" type="checkbox">
+                    <span>Enable extension</span>
+                </label>
+                <label class="checkbox_label" style="margin-top:6px;">
+                    <input id="c2l-debug" type="checkbox">
+                    <span>Debug logging to console</span>
+                </label>
+            </div>
+
+            <div class="c2l-section">
+                <h4>Queue behavior</h4>
+                <label>
+                    <span>Delay between AI calls (ms) — bump if your provider rate-limits</span>
+                    <input id="c2l-queue-delay" type="number" min="0" max="60000" step="100" class="text_pole" value="0">
+                </label>
+            </div>
+
+            <div class="c2l-section">
+                <h4>Conversion profiles</h4>
+                <p style="opacity:0.65; font-size:0.85em; margin:0 0 6px;">
+                    Pick one to edit. Built-in profiles can be edited; if you mess them up,
+                    use "Reset built-ins" to restore the defaults.
+                </p>
+                <div id="c2l-profile-list" class="c2l-profile-list"></div>
+                <div class="c2l-profile-actions">
+                    <button id="c2l-profile-clone" class="menu_button" type="button">Clone</button>
+                    <button id="c2l-profile-delete" class="menu_button" type="button">Delete</button>
+                    <button id="c2l-profile-reset-builtins" class="menu_button" type="button">Reset built-ins</button>
+                </div>
+            </div>
+
+            <div id="c2l-profile-editor" class="c2l-section">
+                <h4>Edit profile: <span id="c2l-prof-name-label">—</span></h4>
+                <label>
+                    <span>Name</span>
+                    <input id="c2l-prof-name" type="text" class="text_pole">
+                </label>
+                <label style="margin-top:6px;">
+                    <span>Base instruction (the system prompt that converts cards into lorebook JSON)</span>
+                    <textarea id="c2l-prof-base" class="text_pole textarea_compact" rows="14"></textarea>
+                </label>
+                <label style="margin-top:6px;">
+                    <span>AI connection profile (optional — leave blank to use the current connection)</span>
+                    <select id="c2l-prof-ai" class="text_pole"></select>
+                </label>
+                <div class="c2l-row" style="display:flex; gap:12px; flex-wrap:wrap; margin-top:6px;">
+                    <label style="flex:1; min-width:180px;">
+                        <span>Entry split mode</span>
+                        <select id="c2l-prof-split" class="text_pole">
+                            <option value="modular">Modular (multi-entry per card — token-efficient)</option>
+                            <option value="flat">Flat (one entry per card — simpler)</option>
+                        </select>
+                    </label>
+                    <label style="flex:1; min-width:140px;">
+                        <span>Word cap (total / per section in modular)</span>
+                        <input id="c2l-prof-wordcap" type="number" min="100" max="3000" class="text_pole">
+                    </label>
+                    <label style="flex:1; min-width:140px;">
+                        <span>Response length (tokens)</span>
+                        <input id="c2l-prof-response" type="number" min="200" max="8000" class="text_pole">
+                    </label>
+                    <label style="flex:1; min-width:140px;">
+                        <span>Output format</span>
+                        <select id="c2l-prof-output" class="text_pole">
+                            <option value="json">JSON</option>
+                            <option value="text">Text (fallback)</option>
+                        </select>
+                    </label>
+                    <label style="flex:1; min-width:140px;">
+                        <span>Default conflict policy</span>
+                        <select id="c2l-prof-conflict" class="text_pole">
+                            <option value="ask">Ask per entry</option>
+                            <option value="skip">Skip existing</option>
+                            <option value="overwrite">Overwrite</option>
+                            <option value="append">Append as new</option>
+                        </select>
+                    </label>
+                </div>
+                <label class="checkbox_label" style="margin-top:8px;">
+                    <input id="c2l-prof-card-summary" type="checkbox">
+                    <span>Also extract a card-level summary entry (in addition to embedded book entries)</span>
+                </label>
+
+                <h4 style="margin-top:10px;">Card fields fed to the AI</h4>
+                <div id="c2l-prof-fields" class="c2l-field-grid"></div>
+
+                <div style="margin-top:10px; display:flex; gap:8px;">
+                    <button id="c2l-prof-save" class="menu_button" type="button">Save profile</button>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</div>

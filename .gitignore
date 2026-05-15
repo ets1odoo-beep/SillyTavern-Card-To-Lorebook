@@ -1,0 +1,8 @@
+node_modules/
+*.bak
+*.bak-*
+*.backup-*
+.DS_Store
+.claude/
+.kilo/
+.antigravity/

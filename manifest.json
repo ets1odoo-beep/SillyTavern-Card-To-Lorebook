@@ -1,0 +1,13 @@
+{
+    "display_name": "Card to Lorebook",
+    "loading_order": 50,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "knav0",
+    "version": "1.0.0-beta.1",
+    "homePage": "",
+    "auto_update": false,
+    "i18n": {}
+}
