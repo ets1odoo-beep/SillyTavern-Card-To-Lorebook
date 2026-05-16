@@ -40,93 +40,162 @@ function fieldDefaults(overrides = {}) {
  * use the token budget efficiently during long chats: each beat
  * only triggers the sub-entries it actually needs.
  * ============================================================ */
-const MODULAR_BASE_INSTRUCTION = `You convert a SillyTavern character card into a MODULAR set of lorebook entries — multiple short entries per character instead of one fat blob. The KEY insight: the World Info engine fires entries based on which key words appear in the recent chat. If every sub-entry has the character's name as a key, then ALL sub-entries fire whenever the name is mentioned — defeating the whole point. So we use a strict key strategy:
+const MODULAR_BASE_INSTRUCTION = `You convert a SillyTavern character card into a complete MODULAR WORLD KIT for the World Info engine. A card is centred on one character but typically MENTIONS many entities — other named characters, locations, items, factions, quests, world concepts. We extract them ALL into separately-keyed lorebook entries so each one fires only when the chat mentions it. This is dramatically more token-efficient than dumping the whole card every turn.
 
-- ANCHOR fires on the character's name (constant or selective).
-- All OTHER sections fire on SECTION-SPECIFIC CUE WORDS as their primary keys, with the character's name as a SECONDARY key (AND-gated). They only inject when both a cue word AND the character is in the scene.
+THE KEY INSIGHT: the WI engine fires entries based on which keywords appear in recent chat. So:
+- Each character's ANCHOR fires on their name.
+- Each character's other sections (appearance, voice, etc.) fire on SECTION-SPECIFIC CUE WORDS as primary keys, with that character's name as a SECONDARY key (AND-gated). They only inject when both a cue word AND the character is in scene.
+- Non-character entities (locations / items / factions / quests / concepts) fire on their own name + a few related terms as primary keys.
 
 OUTPUT FORMAT — return strict JSON only, no markdown fences, no commentary:
 {
-  "name": "<Card name verbatim>",
-  "importance": "main|supporting|minor",
-  "entries": [
-    {
-      "section": "anchor|appearance|personality|voice|background|relationships|quirks",
-      "keys": ["...primary trigger words..."],
-      "secondaryKeys": ["...AND-gated disambiguators..."],
-      "content": "...the entry text..."
-    },
-    ...
+  "primaryCharacter": {
+    "name": "<the card's main character name verbatim>",
+    "importance": "main|supporting|minor",
+    "entries": [
+      { "section": "anchor|appearance|personality|voice|background|relationships|quirks",
+        "keys": [...], "secondaryKeys": [...], "content": "..." },
+      ...
+    ]
+  },
+  "otherEntities": [
+    { "type": "character", "name": "<other character name>", "importance": "supporting|minor",
+      "entries": [ { "section": "...", "keys": [...], "secondaryKeys": [...], "content": "..." }, ... ] },
+    { "type": "location", "name": "<place name>", "keys": [...], "content": "..." },
+    { "type": "item", "name": "<item name>", "keys": [...], "content": "..." },
+    { "type": "faction", "name": "<faction/group name>", "keys": [...], "content": "..." },
+    { "type": "quest", "name": "<quest/mission name>", "keys": [...], "content": "..." },
+    { "type": "concept", "name": "<world concept>", "keys": [...], "content": "..." }
   ]
 }
 
-(Do not emit order/constant/probability/selectiveLogic — the extension fills those in from section defaults. You only choose the section, content, and keys.)
+(Do not emit order/constant/probability/selectiveLogic — the extension fills those in from defaults. You only choose section/type, content, and keys.)
 
-SECTIONS — produce these (omit a section if the card has nothing for it):
+================================================================================
+PART A — PRIMARY CHARACTER (the card itself) — 7-section modular split
+================================================================================
 
 ## anchor (REQUIRED) — 1-2 lines: name + species + GENDER (always state explicitly: "adult female", "young male", "elderly nonbinary humanoid" — never rely on pronouns alone) + role + 1 distinctive identifier ("magic warrior with red ponytail").
-   keys: card name + EVERY nickname / alias / title mentioned ("Arika", "Riri", "Princess Arika")
+   keys: card name + EVERY nickname / alias / title ("Arika", "Riri", "Princess Arika")
    secondaryKeys: (none)
-   Goal: always-on identity glue when the character is in scene. Gender must be in the very first line so it's the first thing the AI sees.
+   Goal: always-on identity glue when the character is in scene. Gender must be in the very first line.
 
-## appearance — physical visual VERBATIM. REQUIRED fields if present in the card:
-   • GENDER (re-state explicitly even if anchor has it — "adult female human", "male orc", etc.)
+## appearance — physical visual VERBATIM. REQUIRED fields if present:
+   • GENDER (re-state — "adult female human", "male orc", etc.)
    • Species + apparent age
    • Height + build
-   • Hair: colour + length + style (ponytail / braid / bob / etc.) + texture (straight/wavy/curly) + parting + bangs/fringe type + how the style sits (e.g. "tail draped over right shoulder", "twin braids reaching mid-back")
+   • Hair: colour + length + style + texture + parting + bangs + how style sits (e.g. "tail draped over right shoulder")
    • Eyes (colour + shape)
    • Skin / fur / scales
-   • Body proportions VERBATIM (bust/dick/ass/waist/thighs — copy the card's wording exactly, do not paraphrase or resize)
-   • LIMB STATUS — state explicitly: "all four limbs intact" OR specify amputations, prosthetics, paralysis, mobility aids. Don't assume completeness.
+   • Body proportions VERBATIM (bust/dick/ass/waist/thighs — copy card's wording exactly)
+   • LIMB STATUS: "all four limbs intact" OR specify amputations / prosthetics / paralysis
    • Marks (scars / tattoos / piercings / freckles / moles)
-   • Non-human features (tail / wings / horns / ears / fur / scales VERBATIM)
-   • Default outfit layer-by-layer top to bottom with exact colours, materials, fit, condition, plus what's UNDER each piece if relevant. Footwear explicit (or "barefoot"). Underwear noted.
-   keys: visual-cue words ONLY ("looks", "looking", "appears", "appearance", "wearing", "wears", "outfit", "naked", "nude", "stripped", "dressed", "undressed", hair words like "hair", "ponytail", "locks", body words like "breasts", "chest", "ass", "thighs", "skin", and any clothing item types actually present in the card)
-   secondaryKeys: card name + ALL nicknames
-   Goal: fires when prose describes the character visually.
-
-## personality — traits, attitudes, motivations, fears, values, behaviour patterns. Use the card's own wording.
-   keys: emotion/behaviour cue words ("feels", "feeling", "thinks", "thought", "angry", "sad", "happy", "embarrassed", "shy", "scared", "afraid", "jealous", "wants", "needs", "fears", "hesitates", "decides", and any trait words the card uses)
+   • Non-human features (tail / wings / horns / ears / fur / scales) VERBATIM
+   • Default outfit layer-by-layer with footwear (or "barefoot") and underwear visibility
+   keys: visual-cue words ONLY ("looks", "appears", "wearing", "wears", "outfit", "naked", "stripped", hair/body part words, clothing item types in card)
    secondaryKeys: card name + nicknames
-   Goal: fires during emotional/decision beats.
 
-## voice — vocal qualities, speech style, vocabulary tier, profanity level, formality, signature phrases. Include 2-3 VERBATIM short example lines from example dialogue if present.
-   keys: dialogue cue words ("says", "said", "speaks", "spoke", "voice", "tone", "asks", "asked", "replies", "replied", "whispers", "whispered", "shouts", "shouted", "tells", "told", "mutters", "mumbles", "laughs", "giggles", "sighs")
+## personality — traits, attitudes, motivations, fears, values, behaviour. Card's own wording.
+   keys: emotion/behaviour cues ("feels", "thinks", "angry", "embarrassed", "wants", "fears" + trait words from card)
    secondaryKeys: card name + nicknames
-   Goal: fires when the character is speaking.
 
-## background — backstory, origin, current circumstances, world context. Drop OOC/meta.
-   keys: named places, factions, organisations, historical events, locations specific to this character's background (from the card text — do NOT invent)
+## voice — vocal quality, speech style, vocabulary, profanity, formality, signatures. Include 2-3 VERBATIM short example dialogue lines.
+   keys: dialogue cues ("says", "speaks", "voice", "asks", "whispers", "shouts", "mutters", "laughs")
    secondaryKeys: card name + nicknames
-   Goal: fires when a relevant place/group/event is mentioned alongside the character.
 
-## relationships — connections to OTHER characters mentioned in the card.
-   keys: EVERY OTHER character / group / organisation name mentioned in the card (NOT this character's own name)
+## background — backstory, origin, current circumstances.
+   keys: named places / factions / events specific to the character's history (from card text)
    secondaryKeys: card name + nicknames
-   Goal: fires only when both this character AND another linked entity are in the scene. selectiveLogic AND_ALL is auto-applied.
 
-## quirks — habits, mannerisms, kinks, taboos, scenario-specific notes that don't fit above but are RP-useful.
-   keys: the SPECIFIC quirk nouns/verbs (e.g. "masturbating", "gloves" if the card says she only wears gloves; "tea", "smoking", "drinking" — whatever quirks actually exist in the card text)
+## relationships — connections to OTHER characters.
+   keys: EVERY OTHER character / group name mentioned (NOT this character's own name)
    secondaryKeys: card name + nicknames
-   Goal: fires when relevant quirk is in the scene.
+   (selectiveLogic AND_ALL auto-applied — fires only when BOTH are in scene.)
 
-IMPORTANCE TIER — pick one based on card content:
-- main: protagonist / POV-adjacent / explicitly called "main character" or "{{user}}'s romantic partner" / "best friend" etc. Anchor will be constant (always-on when this char is active in chat).
+## quirks — habits, kinks, taboos, scenario-specific notes that don't fit above.
+   keys: the SPECIFIC quirk nouns/verbs from the card
+   secondaryKeys: card name + nicknames
+
+IMPORTANCE for primaryCharacter:
+- main: protagonist / POV-adjacent / "main character" / "{{user}}'s girlfriend/best friend/etc.". Anchor will be CONSTANT.
 - supporting: recurring named side character. Anchor selective on name.
-- minor: bit-part / NPC mentioned in passing. Anchor selective on name with reduced probability.
+- minor: bit-part. Anchor selective on name with reduced probability.
 
-KEY EXTRACTION RULES — STRICT:
-- The character's name belongs ONLY in the ANCHOR section's primary keys. Every other section has it in secondaryKeys.
-- Extract cue words from the card's actual text where possible. Do not invent ("wings" only if card mentions wings).
-- Include ALL nicknames found in the card.
-- For relationships: list every OTHER character / group name that appears in the card — never this character's own name.
-- Avoid single-letter or stopword keys ("a", "the", "is", "and"). Use only meaningful tokens.
-- Use lowercase except for proper nouns and acronyms.
+================================================================================
+PART B — OTHER ENTITIES (everything else in the card)
+================================================================================
 
-CONTENT CONSTRAINTS:
-- VERBATIM for distinct facts: colour words, body proportions, marks, non-human features, dialogue samples.
-- Hard cap per section: anchor 80 words, voice 200, personality 250, appearance 350, background 300, relationships 200, quirks 200.
-- Drop creator-meta / OOC / [bracketed instructions] / author asides.
+Extract ANY of these that the card mentions by name. Skip generic mentions ("a guard", "the forest"). Skip OOC / creator-meta / RP rules.
+
+### type: "character" — OTHER named characters mentioned in the card with at least a sentence of description.
+   Use the same 7-section modular structure as primaryCharacter (with appropriate importance):
+     {
+       "type": "character",
+       "name": "ETSVin",
+       "importance": "main|supporting|minor",
+       "entries": [ { "section": "anchor", ... }, { "section": "appearance", ... }, ... ]
+     }
+   Apply the same key strategy — anchor uses name as primary, others use cue words.
+   For characters mentioned only briefly: emit only the anchor + 1-2 most relevant sections.
+
+### type: "location" — ANY named place (kingdom, capital, village, building, region, room).
+   {
+     "type": "location",
+     "name": "Royal Palace",
+     "keys": ["Royal Palace", "palace", "throne room", any landmarks named inside it],
+     "content": "<2-4 sentences: geography, architecture, atmosphere, who lives/works there, what happens there. VERBATIM facts from card.>"
+   }
+
+### type: "item" — ANY named item, artifact, equipment, currency, signature object.
+   {
+     "type": "item",
+     "name": "Excalibur",
+     "keys": ["Excalibur", "holy sword", material/colour terms, owner's name if explicit in card],
+     "content": "<2-3 sentences: physical form, origin/lore, properties, current owner or location.>"
+   }
+
+### type: "faction" — ANY named group, organisation, church, guild, kingdom, company, religion.
+   {
+     "type": "faction",
+     "name": "Vaaj Church",
+     "keys": ["Vaaj Church", "Vaaj", "priests of Vaaj", member terms, symbol/uniform terms in card],
+     "content": "<2-4 sentences: purpose, structure, allies/enemies, current state, key members named in card.>"
+   }
+
+### type: "quest" — ANY mission / task / objective the card sets up.
+   {
+     "type": "quest",
+     "name": "Defeat the Demon Lord",
+     "keys": ["Demon Lord", "quest", "mission", relevant verbs from objective],
+     "content": "<2-3 sentences: objective, stakes, who is involved, current progress / status.>"
+   }
+
+### type: "concept" — world-building info NOT covered above: magic systems, currencies, technologies, religions (the doctrine itself, not the church), cultures, ranks/titles, historical events, world rules ("polygamy for adventurers is legal").
+   {
+     "type": "concept",
+     "name": "Pinis Religion",
+     "keys": ["Pinis", "Pinis religion", "head priests of Pinis", terms specific to this concept],
+     "content": "<2-3 sentences explaining the concept and its relevance.>"
+   }
+
+================================================================================
+EXTRACTION RULES — STRICT
+================================================================================
+
+- Be greedy on entity extraction: if a name appears with even a short description (one sentence), make it an entry. Better too many small entries than missing context.
+- Skip throwaway names ("a guard", "the merchant") — no usable description.
+- Skip OOC / creator preferences / "Bakunyuu Party NTR will not skip ahead in sex" type RP rules.
+- DEDUP: each named entity gets ONE entry (or one per-section for characters).
+- Use lowercase keys except for proper nouns and acronyms.
+- Avoid single-character, stopword, or punctuation-only keys.
+- For relationships sections AND non-character entities, do NOT include the primary character's name in the entity's primary keys — let the entity fire on its own merits.
+
+CONTENT CONSTRAINTS
+- VERBATIM for distinct facts: colour words, body proportions, place names, item materials, faction names.
+- Hard caps per section:
+   character anchor 80w, voice 200w, personality 250w, appearance 350w, background 300w, relationships 200w, quirks 200w.
+   location 250w. item 150w. faction 200w. quest 200w. concept 200w.
+- Drop creator meta, OOC, [bracketed instructions], author asides.
 - Output ONLY the JSON object. No prose around it. No code fences.`;
 
 // The flat-extraction system prompt — one entry per card, single content blob.
@@ -250,26 +319,28 @@ CONSTRAINT: Hard cap 450 words. Skip visual appearance entirely (that lives else
 const DEFAULT_PROFILES = [
     {
         id: 'rp_default',
-        name: 'RP Character (default, modular)',
+        name: 'RP World Kit (modular characters + entities)',
         builtin: true,
-        // Modular = one card → many sub-entries (anchor, appearance, personality,
-        // voice, background, relationships, quirks) each with their own keys,
-        // constant flag, and order. Token-efficient on long chats.
+        // Modular = one card → primary character's 7-section split PLUS every
+        // OTHER named entity in the card (characters mentioned, locations,
+        // items, factions, quests, world concepts) extracted as its own
+        // keyed entry. Token-efficient AND comprehensive: a single card can
+        // produce 20-40 properly-scoped lorebook entries describing the
+        // entire world it implies.
         entrySplitMode: 'modular',
         baseInstruction: MODULAR_BASE_INSTRUCTION,
         includeFields: fieldDefaults(),
-        // Word cap is per-section in modular mode (enforced in the prompt);
-        // this is just a safety cap on the full content.
+        // Word cap is per-section/per-type in modular mode (enforced in the
+        // prompt); this is just a safety cap on the full content.
         wordCap: 1800,
         outputFormat: 'json',
         aiConnectionProfile: '',
         alsoExtractCardSummary: true,
-        conflictPolicy: 'ask', // ask | skip | overwrite | append
-        responseLength: 3500,
-        // P2.16 cost ceiling — warn at preflight if estimated tokens exceed this.
-        // 0 = disabled.
+        conflictPolicy: 'ask',
+        // World Kit returns a much bigger JSON (multiple characters + multiple
+        // entities) so we need generous output budget.
+        responseLength: 8000,
         maxEstimatedTokens: 0,
-        // P3.20 per-section overrides — { sectionName: {order?, probability?, ...} }
         sectionOverrides: {},
     },
     {

@@ -18,7 +18,7 @@ import { getCardByIndex, getEmbeddedBookEntries, hasExtractableContent, buildCar
 import { listProfiles, getProfile, getSelectedProfile, setSelectedProfile, settings } from './profiles.js';
 import { listAiConnectionProfiles } from './conversionEngine.js';
 import { convertOneCard } from './conversionEngine.js';
-import { listAllWorlds, commitEntries, makeCardStamp, makeEmbeddedStamp, openWorldInfoEditor, removeStampedEntries } from './lorebookIO.js';
+import { listAllWorlds, commitEntries, makeCardStamp, makeEmbeddedStamp, makeEntityStamp, openWorldInfoEditor, removeStampedEntries } from './lorebookIO.js';
 import { defaultLorebookName, estimateTokens, log, warn, err } from './core.js';
 
 const STEPS = ['source', 'profile', 'dest', 'preflight', 'progress', 'preview', 'done'];
@@ -335,6 +335,9 @@ function renderStepPreview(state) {
             <label>Bulk actions:</label>
             <button type="button" class="menu_button" data-bulk="drop-section" data-section="background">Drop all background</button>
             <button type="button" class="menu_button" data-bulk="drop-section" data-section="quirks">Drop all quirks</button>
+            <button type="button" class="menu_button" data-bulk="drop-type"    data-etype="quest">Drop all quests</button>
+            <button type="button" class="menu_button" data-bulk="drop-type"    data-etype="concept">Drop all concepts</button>
+            <button type="button" class="menu_button" data-bulk="drop-type"    data-etype="item">Drop all items</button>
             <button type="button" class="menu_button" data-bulk="set-prob">Set all probability to…</button>
             <button type="button" class="menu_button" data-bulk="set-constant">All constant on</button>
             <button type="button" class="menu_button" data-bulk="set-selective">All selective on</button>
@@ -464,6 +467,12 @@ function attachStepHandlers(state, refresh) {
                         if (String(r._origin?.section || '').toLowerCase() === section) r.dropped = true;
                     });
                     refresh();
+                } else if (action === 'drop-type') {
+                    const etype = b.dataset.etype;
+                    state.previewRows.forEach(r => {
+                        if (String(r._origin?.entityType || '').toLowerCase() === etype) r.dropped = true;
+                    });
+                    refresh();
                 } else if (action === 'set-prob') {
                     const val = prompt('Set probability for all entries (0-100):', '100');
                     if (val === null) return;
@@ -569,10 +578,24 @@ async function runQueue(state, refresh) {
             try {
                 const entries = await convertOneCard(card, profile, signal);
                 for (const entry of entries) {
-                    const sectionLabel = entry._origin?.sectionLabel || '';
-                    entry.comment = sectionLabel
-                        ? makeCardStamp(card.name, '', sectionLabel)
-                        : makeCardStamp(card.name, profile.name);
+                    const origin = entry._origin || {};
+                    if (origin.source === 'entity') {
+                        // Non-character world entity (location/item/faction/quest/concept)
+                        entry.comment = makeEntityStamp(origin.entityType, origin.entityName);
+                    } else if (origin.fromOtherEntities && origin.cardName) {
+                        // Other-character extracted from the card's mentions —
+                        // stamp by that character's name + section, not the parent card.
+                        const sectionLabel = origin.sectionLabel || '';
+                        entry.comment = sectionLabel
+                            ? makeCardStamp(origin.cardName, '', sectionLabel)
+                            : makeCardStamp(origin.cardName, profile.name);
+                    } else {
+                        // Primary card character sub-entry.
+                        const sectionLabel = origin.sectionLabel || '';
+                        entry.comment = sectionLabel
+                            ? makeCardStamp(card.name, '', sectionLabel)
+                            : makeCardStamp(card.name, profile.name);
+                    }
                 }
                 state.queue[i].entries = entries;
                 state.queue[i].status = 'done';
@@ -673,16 +696,30 @@ function ensureKeyPresent(entry, name) {
 function buildPreviewRows(state) {
     const rows = [];
 
-    // AI-generated entries (one in flat mode, many in modular mode).
+    // AI-generated entries (one in flat mode, many in modular/world-kit mode).
     for (let i = 0; i < state.queue.length; i++) {
         const q = state.queue[i];
         if (q.status !== 'done' || !Array.isArray(q.entries)) continue;
-        const card = state.cards[i].card;
+        const parentCard = state.cards[i].card;
         for (const e of q.entries) {
-            const kind = e._origin?.section ? `card · ${e._origin.sectionLabel || e._origin.section}` : 'card';
+            const o = e._origin || {};
+            // Determine kind label + which "group" this row belongs under.
+            let kind;
+            let cardName;
+            if (o.source === 'entity') {
+                kind = `${o.entityTypeLabel || o.entityType}`;
+                cardName = o.entityName || 'Entity';
+            } else if (o.fromOtherEntities && o.cardName) {
+                kind = `character · ${o.sectionLabel || o.section || ''}`.trim();
+                cardName = o.cardName;
+            } else {
+                kind = o.section ? `character · ${o.sectionLabel || o.section}` : 'character';
+                cardName = parentCard.name;
+            }
             rows.push({
                 kind,
-                cardName: card.name,
+                cardName,
+                parentCardName: o.fromOtherEntities ? parentCard.name : (o.parentCardName || parentCard.name),
                 comment: e.comment,
                 keys: e.keys || [],
                 secondaryKeys: e.secondaryKeys || [],

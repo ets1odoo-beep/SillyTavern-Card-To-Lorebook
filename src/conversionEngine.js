@@ -84,29 +84,27 @@ const FLAT_JSON_SCHEMA = {
     required: ['name', 'content'],
 };
 
+// Schema for World Kit modular output: a primary character with sectioned
+// entries PLUS otherEntities of mixed types (character/location/item/etc).
+// We keep this loose because some models reject overly strict schemas with
+// oneOf branches inside arrays — JSON parsing on our end is robust anyway.
 const MODULAR_JSON_SCHEMA = {
     type: 'object',
     properties: {
-        name: { type: 'string' },
-        importance: { type: 'string', enum: ['main', 'supporting', 'minor'] },
-        entries: {
-            type: 'array',
-            items: {
-                type: 'object',
-                properties: {
-                    section: { type: 'string' },
-                    keys: { type: 'array', items: { type: 'string' } },
-                    secondaryKeys: { type: 'array', items: { type: 'string' } },
-                    constant: { type: 'boolean' },
-                    order: { type: 'number' },
-                    probability: { type: 'number' },
-                    content: { type: 'string' },
-                },
-                required: ['section', 'content'],
+        primaryCharacter: {
+            type: 'object',
+            properties: {
+                name: { type: 'string' },
+                importance: { type: 'string', enum: ['main', 'supporting', 'minor'] },
+                entries: { type: 'array' },
             },
         },
+        otherEntities: { type: 'array' },
+        // Legacy shape — still accepted by the parser if AI emits it.
+        name: { type: 'string' },
+        importance: { type: 'string' },
+        entries: { type: 'array' },
     },
-    required: ['name', 'entries'],
 };
 
 // selectiveLogic values mirror ST's world-info AND_ANY (0) / NOT_ALL (1) /
@@ -127,6 +125,22 @@ export const SECTION_DEFAULTS = {
     relationships: { order: 400, probability: 100, constantFor: [],       wordCap: 200, selectiveLogic: SELECTIVE_LOGIC.AND_ALL, nameAsPrimary: false },
     quirks:        { order: 350, probability: 100, constantFor: [],       wordCap: 200, selectiveLogic: SELECTIVE_LOGIC.AND_ALL, nameAsPrimary: false },
 };
+
+/**
+ * Non-character entity type defaults. Each non-character entity becomes one
+ * lorebook entry with these settings unless the AI overrides them.
+ */
+export const ENTITY_TYPE_DEFAULTS = {
+    location: { order: 250, probability: 100, constant: false, wordCap: 250, selectiveLogic: SELECTIVE_LOGIC.AND_ANY },
+    item:     { order: 350, probability: 100, constant: false, wordCap: 150, selectiveLogic: SELECTIVE_LOGIC.AND_ANY },
+    faction:  { order: 300, probability: 100, constant: false, wordCap: 200, selectiveLogic: SELECTIVE_LOGIC.AND_ANY },
+    quest:    { order: 400, probability: 90,  constant: false, wordCap: 200, selectiveLogic: SELECTIVE_LOGIC.AND_ANY },
+    concept:  { order: 450, probability: 90,  constant: false, wordCap: 200, selectiveLogic: SELECTIVE_LOGIC.AND_ANY },
+};
+
+export function entityDefaultsFor(type) {
+    return ENTITY_TYPE_DEFAULTS[String(type || '').toLowerCase()] || ENTITY_TYPE_DEFAULTS.concept;
+}
 
 /**
  * Resolve section config — built-in defaults can be overridden per-profile via
@@ -266,19 +280,80 @@ function parsedToEntry(card, parsed, profile) {
 }
 
 /**
- * Modular parser — takes the AI's multi-entry JSON and returns an array of
- * fully-configured internal entries (one per section the AI returned).
+ * Top-level modular parser — accepts both:
+ *   (a) NEW World Kit shape: { primaryCharacter: {...}, otherEntities: [...] }
+ *   (b) OLD modular shape:   { name, importance, entries: [...] }
  *
- * Each sub-entry has properly-tiered: keys, secondaryKeys, constant, order,
- * probability, content, and a stamped comment like "[card2lore:Anchor] Arika".
+ * Returns a flat array of internal entries combining primary character
+ * sections, every other-character section, and one entry per non-character
+ * entity (location, item, faction, quest, concept).
  */
 function parsedToModularEntries(card, parsed, profile) {
+    // Detect World Kit shape (new) vs legacy modular shape.
+    const isWorldKit = parsed && typeof parsed === 'object'
+        && (parsed.primaryCharacter || Array.isArray(parsed.otherEntities));
+
+    if (!isWorldKit) {
+        // Legacy single-character shape — original behaviour.
+        return parseOneCharacter(card, parsed, profile);
+    }
+
+    const all = [];
+
+    // Primary character: same as legacy parse, but the AI returns it under
+    // .primaryCharacter (which has name/importance/entries).
+    if (parsed.primaryCharacter && typeof parsed.primaryCharacter === 'object') {
+        const primary = parsed.primaryCharacter;
+        // Fall back to the card's actual name if AI omitted it.
+        if (!primary.name) primary.name = card?.name;
+        const primaryEntries = parseOneCharacter(card, primary, profile);
+        all.push(...primaryEntries);
+    }
+
+    // Other entities: characters (sectioned) + locations/items/factions/quests/concepts (single-entry).
+    const others = Array.isArray(parsed.otherEntities) ? parsed.otherEntities : [];
+    for (const ent of others) {
+        const type = String(ent?.type || '').toLowerCase();
+        if (!ent || !ent.name) continue;
+        if (type === 'character') {
+            // Treat as a mini-character with its own name + sections.
+            const psuedoCard = { name: ent.name }; // synthetic card-name owner
+            const sub = parseOneCharacter(psuedoCard, ent, profile);
+            // Tag _origin so the preview UI knows this came from otherEntities.
+            for (const e of sub) {
+                e._origin.fromOtherEntities = true;
+                e._origin.parentCardName = card?.name;
+            }
+            all.push(...sub);
+        } else if (ENTITY_TYPE_DEFAULTS[type]) {
+            const built = buildNonCharacterEntity(card, ent, type, profile);
+            if (built) all.push(built);
+        } else {
+            // Unknown type — coerce to concept.
+            const built = buildNonCharacterEntity(card, ent, 'concept', profile);
+            if (built) all.push(built);
+        }
+    }
+
+    if (all.length === 0) {
+        warn('World Kit response produced no entries — falling back to one-entry parse');
+        return [parsedToEntry(card, { name: card?.name, keys: [card?.name], content: '' }, profile)];
+    }
+    return all;
+}
+
+/**
+ * Parse a single character object {name, importance, entries:[{section,...}]}
+ * into internal entries. Used for both primaryCharacter and other-character
+ * extractions.
+ */
+function parseOneCharacter(card, parsed, profile) {
     const cardName = String(parsed?.name || card?.name || 'Unknown').trim();
     const importance = String(parsed?.importance || 'supporting').toLowerCase();
     const rawEntries = Array.isArray(parsed?.entries) ? parsed.entries : [];
 
     if (rawEntries.length === 0) {
-        warn('Modular response had no entries — falling back to one-entry parse');
+        warn(`Character "${cardName}" had no entries — falling back to one-entry parse`);
         return [parsedToEntry(card, { name: cardName, keys: [cardName], content: parsed?.content || '' }, profile)];
     }
 
@@ -408,6 +483,64 @@ function textFallbackEntry(card, rawText, profile) {
         _origin: {
             source: 'card-fallback',
             cardName: name,
+            profileId: profile.id,
+            profileName: profile.name,
+            createdAt: new Date().toISOString(),
+        },
+    };
+}
+
+/**
+ * Build a single internal entry for a non-character world entity
+ * (location, item, faction, quest, concept).
+ *
+ * @param {object} card    the parent card (for _origin tracking)
+ * @param {object} ent     AI-emitted entity object {name, keys, content}
+ * @param {string} type    one of: location | item | faction | quest | concept
+ * @param {object} profile conversion profile
+ */
+function buildNonCharacterEntity(card, ent, type, profile) {
+    const name = String(ent?.name || '').trim();
+    if (!name) return null;
+    const def = entityDefaultsFor(type);
+    let content = sanitizeContent(String(ent?.content || ''));
+    if (!content) return null;
+    if (Number.isFinite(def.wordCap)) content = trimWords(content, def.wordCap);
+
+    const keys = sanitizeKeyList(
+        [name, ...(Array.isArray(ent?.keys) ? ent.keys : [])],
+        { alwaysInclude: [name], maxKeys: 8 },
+    );
+    const secondaryKeys = sanitizeSecondaryAgainstPrimary(
+        keys,
+        Array.isArray(ent?.secondaryKeys) ? ent.secondaryKeys : [],
+        4,
+    );
+
+    // Capitalised label for the stamp/preview.
+    const typeLabel = type.charAt(0).toUpperCase() + type.slice(1);
+
+    return {
+        keys,
+        secondaryKeys,
+        content,
+        comment: '', // populated by caller via makeEntityStamp
+        constant: def.constant,
+        selective: !def.constant,
+        order: def.order,
+        position: 0,
+        probability: def.probability,
+        useProbability: def.probability < 100,
+        selectiveLogic: def.selectiveLogic,
+        scanDepth: null,
+        caseSensitive: null,
+        matchWholeWords: null,
+        _origin: {
+            source: 'entity',
+            entityType: type,
+            entityTypeLabel: typeLabel,
+            entityName: name,
+            parentCardName: card?.name,
             profileId: profile.id,
             profileName: profile.name,
             createdAt: new Date().toISOString(),

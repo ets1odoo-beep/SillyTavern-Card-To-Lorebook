@@ -139,6 +139,21 @@ export function makeEmbeddedStamp(cardName, originalComment = '') {
     return originalComment ? `${head} — ${originalComment}` : head;
 }
 
+/**
+ * Stamp for a non-character world entity extracted from a card.
+ *   makeEntityStamp('location', 'Royal Palace')  → "[card2lore:location] Royal Palace"
+ *   makeEntityStamp('item', 'Excalibur')         → "[card2lore:item] Excalibur"
+ *
+ * Entity stamps don't include the parent card name in the comment — the
+ * entity is treated as a first-class noun that may be re-extracted from
+ * multiple cards (collision resolution handles dedup).
+ */
+export function makeEntityStamp(entityType, entityName) {
+    const t = String(entityType || 'concept').toLowerCase();
+    const n = String(entityName || 'unknown').trim();
+    return `[${ENTRY_STAMP_CARD}:${t}] ${n}`;
+}
+
 /** True if the entry was stamped by us (any kind). */
 export function isStampedByUs(entry) {
     const c = String(entry?.comment || '');
