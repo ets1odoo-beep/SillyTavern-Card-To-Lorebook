@@ -64,12 +64,23 @@ OUTPUT FORMAT — return strict JSON only, no markdown fences, no commentary:
 
 SECTIONS — produce these (omit a section if the card has nothing for it):
 
-## anchor (REQUIRED) — 1-2 lines: name + species/role + 1 distinctive identifier ("magic warrior with red ponytail")
+## anchor (REQUIRED) — 1-2 lines: name + species + GENDER (always state explicitly: "adult female", "young male", "elderly nonbinary humanoid" — never rely on pronouns alone) + role + 1 distinctive identifier ("magic warrior with red ponytail").
    keys: card name + EVERY nickname / alias / title mentioned ("Arika", "Riri", "Princess Arika")
    secondaryKeys: (none)
-   Goal: always-on identity glue when the character is in scene.
+   Goal: always-on identity glue when the character is in scene. Gender must be in the very first line so it's the first thing the AI sees.
 
-## appearance — physical visual VERBATIM: species, height, build, hair (colour+length+style+texture), eyes (colour+shape), skin/fur/scales, body proportions (bust/dick/ass), marks, non-human features (tail/wings/horns/ears), default outfit layer-by-layer with exact colours/materials.
+## appearance — physical visual VERBATIM. REQUIRED fields if present in the card:
+   • GENDER (re-state explicitly even if anchor has it — "adult female human", "male orc", etc.)
+   • Species + apparent age
+   • Height + build
+   • Hair: colour + length + style (ponytail / braid / bob / etc.) + texture (straight/wavy/curly) + parting + bangs/fringe type + how the style sits (e.g. "tail draped over right shoulder", "twin braids reaching mid-back")
+   • Eyes (colour + shape)
+   • Skin / fur / scales
+   • Body proportions VERBATIM (bust/dick/ass/waist/thighs — copy the card's wording exactly, do not paraphrase or resize)
+   • LIMB STATUS — state explicitly: "all four limbs intact" OR specify amputations, prosthetics, paralysis, mobility aids. Don't assume completeness.
+   • Marks (scars / tattoos / piercings / freckles / moles)
+   • Non-human features (tail / wings / horns / ears / fur / scales VERBATIM)
+   • Default outfit layer-by-layer top to bottom with exact colours, materials, fit, condition, plus what's UNDER each piece if relevant. Footwear explicit (or "barefoot"). Underwear noted.
    keys: visual-cue words ONLY ("looks", "looking", "appears", "appearance", "wearing", "wears", "outfit", "naked", "nude", "stripped", "dressed", "undressed", hair words like "hair", "ponytail", "locks", body words like "breasts", "chest", "ass", "thighs", "skin", and any clothing item types actually present in the card)
    secondaryKeys: card name + ALL nicknames
    Goal: fires when prose describes the character visually.
@@ -135,7 +146,19 @@ OUTPUT FORMAT — return strict JSON only, no markdown fences, no commentary:
 CONTENT STRUCTURE — use these H2 sections, in this order. Omit any section that has no source material.
 
 ## Appearance
-Verbatim physical details: species, age, height, build, hair (colour + length + style + texture), eyes (colour + shape), skin/fur/scales tone, body proportions, distinguishing marks, non-human features (tail/wings/horns/ears). Copy colour words exactly. Never resize or paraphrase bust/height/figure.
+Verbatim physical details. REQUIRED fields if present in the card:
+- GENDER (always state explicitly — "adult female", "male", "nonbinary humanoid" — never just rely on pronouns)
+- Species + apparent age
+- Height + build
+- Hair: colour + length + style + texture + parting + bangs/fringe + how it sits (which side ponytail/braid falls)
+- Eyes (colour + shape)
+- Skin / fur / scales tone
+- Body proportions (bust / dick / ass / waist / thighs) VERBATIM — copy card's wording, never paraphrase or resize
+- LIMB STATUS — explicit: "all four limbs intact" OR specify amputations / prosthetics / paralysis / mobility aids
+- Distinguishing marks (scars / tattoos / piercings / freckles / moles)
+- Non-human features (tail / wings / horns / ears / fur / scales) VERBATIM
+- Default outfit layer-by-layer with exact colours, materials, fit, and footwear (or "barefoot")
+Copy colour words exactly.
 
 ## Personality
 Traits, attitudes, emotional tendencies, motivations, fears, values, behaviour patterns. Use the card's own wording where possible.
@@ -167,8 +190,14 @@ OUTPUT — strict JSON:
 
 CONTENT — use these sections, omit if empty. Copy visual details verbatim. Never paraphrase colours, sizes, or non-human traits.
 
+## Gender & Identity
+Explicit gender (adult female / male / nonbinary humanoid / etc.) + apparent age. Always state — never leave it implied by pronouns.
+
 ## Species & Build
 Species, height, body type, distinct proportions (bust/waist/hip/dick if present).
+
+## Limb Status
+"All four limbs intact" OR specify amputations / prosthetics / paralysis / mobility aids (wheelchair, crutches, cane). Never assume completeness.
 
 ## Hair
 Colour, length, style, texture, parting, bangs.
