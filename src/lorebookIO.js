@@ -21,6 +21,7 @@ import {
 import {
     chat_metadata,
     characters,
+    getRequestHeaders,
     saveMetadata,
     saveSettingsDebounced,
 } from '/script.js';
@@ -92,12 +93,15 @@ function addEntryToData(data, entry) {
     created.comment = String(entry.comment || '');
     created.constant = !!entry.constant;
     created.selective = !!entry.selective;
-    if (Number.isFinite(entry.order))       created.order = entry.order;
-    if (Number.isFinite(entry.position))    created.position = entry.position;
-    if (Number.isFinite(entry.probability)) created.probability = entry.probability;
+    if (Number.isFinite(entry.order))           created.order = entry.order;
+    if (Number.isFinite(entry.position))        created.position = entry.position;
+    if (Number.isFinite(entry.probability))     created.probability = entry.probability;
     if (typeof entry.useProbability === 'boolean') created.useProbability = entry.useProbability;
-    if (Number.isFinite(entry.depth))       created.depth = entry.depth;
-    if (typeof entry.disable === 'boolean') created.disable = entry.disable;
+    if (Number.isFinite(entry.depth))           created.depth = entry.depth;
+    if (Number.isFinite(entry.selectiveLogic))  created.selectiveLogic = entry.selectiveLogic;
+    if (typeof entry.disable === 'boolean')     created.disable = entry.disable;
+    if (typeof entry.caseSensitive === 'boolean') created.caseSensitive = entry.caseSensitive;
+    if (typeof entry.matchWholeWords === 'boolean') created.matchWholeWords = entry.matchWholeWords;
     if (entry._origin) {
         // ST entries don't have a typed metadata slot; keep our origin info
         // as a side-channel on the entry for in-memory reads (the comment
@@ -142,15 +146,24 @@ export function isStampedByUs(entry) {
 }
 
 /**
- * Find an existing entry in `data.entries` whose comment matches our stamp
- * prefix for the same card. Used by the conflict policy.
+ * Find an existing entry in `data.entries` whose comment EXACTLY matches the
+ * given stamp. We can't use `startsWith` — `[card2lore:card:Anchor] Arika`
+ * would prefix-match `[card2lore:card:Anchor] Arika and Friends`. Instead we
+ * compare the full stamp up to a terminator (end-of-string, comma, or em
+ * dash for embedded entries that suffix the original name).
  */
-function findCollidingEntry(data, stampPrefix) {
+function findCollidingEntry(data, fullStamp) {
     if (!data?.entries) return null;
+    const norm = String(fullStamp || '').trim();
+    if (!norm) return null;
     for (const [uid, entry] of Object.entries(data.entries)) {
-        if (String(entry?.comment || '').startsWith(stampPrefix)) {
-            return { uid: Number(uid), entry };
-        }
+        const comment = String(entry?.comment || '').trim();
+        if (!comment) continue;
+        if (comment === norm) return { uid: Number(uid), entry };
+        // Embedded stamp form: "[card2lore:embedded] CardName — OriginalName"
+        // Match if the prefix up to the em dash equals our stamp.
+        const head = comment.split(' — ')[0].trim();
+        if (head === norm) return { uid: Number(uid), entry };
     }
     return null;
 }
@@ -259,7 +272,8 @@ export async function commitEntries(destination, entries, conflictPolicy = 'ask'
     }
 
     if (destination.mode === 'character') {
-        // Write into the character's embedded character_book.
+        // Write into the character's embedded character_book and POST to
+        // /api/characters/merge-attributes so it persists immediately.
         if (!destination.characterAvatar) throw new Error('Character destination needs an avatar');
         const charIdx = characters.findIndex(c => c?.avatar === destination.characterAvatar);
         if (charIdx === -1) throw new Error('Target character not found');
@@ -276,10 +290,26 @@ export async function commitEntries(destination, entries, conflictPolicy = 'ask'
             result.written++;
         }
         result.target = `${char.name}'s character book`;
-        // Save: ST persists character data via /api/characters/edit — we'd
-        // need access to that flow. Defer for now; the in-memory write is
-        // visible immediately and is persisted on next character save.
-        warn('character destination wrote in-memory; ST persists this on next character save action');
+
+        // Persist via merge-attributes — sends only character_book, server
+        // merges into the card on disk. No need to reload all characters.
+        try {
+            const response = await fetch('/api/characters/merge-attributes', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    avatar: char.avatar,
+                    data: { character_book: book },
+                }),
+            });
+            if (!response.ok) {
+                throw new Error(`merge-attributes returned ${response.status}`);
+            }
+            log(`Character book persisted via merge-attributes for ${char.name}`);
+        } catch (e) {
+            err('character destination persistence failed', e);
+            throw new Error(`Failed to save character book to disk: ${e.message}. In-memory copy is still set.`);
+        }
         saveSettingsDebounced();
         return result;
     }
@@ -343,11 +373,12 @@ async function appendToWorld(worldName, entries, policy, result) {
             old.comment = String(entry.comment || '');
             old.constant = !!entry.constant;
             old.selective = !!entry.selective;
-            if (Number.isFinite(entry.order))       old.order = entry.order;
-            if (Number.isFinite(entry.position))    old.position = entry.position;
-            if (Number.isFinite(entry.probability)) old.probability = entry.probability;
+            if (Number.isFinite(entry.order))           old.order = entry.order;
+            if (Number.isFinite(entry.position))        old.position = entry.position;
+            if (Number.isFinite(entry.probability))     old.probability = entry.probability;
             if (typeof entry.useProbability === 'boolean') old.useProbability = entry.useProbability;
-            if (Number.isFinite(entry.depth))       old.depth = entry.depth;
+            if (Number.isFinite(entry.depth))           old.depth = entry.depth;
+            if (Number.isFinite(entry.selectiveLogic))  old.selectiveLogic = entry.selectiveLogic;
             old._c2lOrigin = entry._origin;
             result.overwritten++;
             result.written++;

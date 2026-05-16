@@ -136,3 +136,24 @@ export function slugify(s) {
         .trim()
         .slice(0, 64);
 }
+
+/**
+ * Sanitise AI-generated content before it goes into a lorebook entry. Models
+ * sometimes wrap output in stray markdown fences, leave `<details>` from a
+ * thinking pass, or output runs of blank lines. Strip the noise, keep the
+ * structure.
+ */
+export function sanitizeContent(text) {
+    let s = String(text ?? '');
+    // Strip leading/trailing markdown fences (```, ```json, ```c2l etc.)
+    s = s.replace(/^```[a-zA-Z0-9_-]*\s*\n?/, '').replace(/\n?```\s*$/, '');
+    // Strip stray <details>/<summary> wrappers
+    s = s.replace(/<\/?details[^>]*>/gi, '').replace(/<\/?summary[^>]*>/gi, '');
+    // Strip dangerous HTML — keep only simple inline emphasis + line breaks
+    s = s.replace(/<(?!\/?(?:i|b|em|strong|br|p)\b)[^>]+>/gi, '');
+    // Collapse runs of blank lines
+    s = s.replace(/\n{3,}/g, '\n\n');
+    // Trim trailing whitespace per line
+    s = s.split('\n').map(line => line.replace(/[ \t]+$/, '')).join('\n');
+    return s.trim();
+}

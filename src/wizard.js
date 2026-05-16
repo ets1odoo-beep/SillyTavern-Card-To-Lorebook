@@ -18,7 +18,7 @@ import { getCardByIndex, getEmbeddedBookEntries, hasExtractableContent, buildCar
 import { listProfiles, getProfile, getSelectedProfile, setSelectedProfile, settings } from './profiles.js';
 import { listAiConnectionProfiles } from './conversionEngine.js';
 import { convertOneCard } from './conversionEngine.js';
-import { listAllWorlds, commitEntries, makeCardStamp, makeEmbeddedStamp, openWorldInfoEditor } from './lorebookIO.js';
+import { listAllWorlds, commitEntries, makeCardStamp, makeEmbeddedStamp, openWorldInfoEditor, removeStampedEntries } from './lorebookIO.js';
 import { defaultLorebookName, estimateTokens, log, warn, err } from './core.js';
 
 const STEPS = ['source', 'profile', 'dest', 'preflight', 'progress', 'preview', 'done'];
@@ -55,7 +55,8 @@ function newWizardState(selectedIds) {
             characterAvatar: '',
         },
         conflictPolicy: 'ask',
-        queue: [],                   // [{ cardIdx, status, error, entry }]
+        wipeBeforeCommit: false,     // P1.12 redo-from-scratch toggle
+        queue: [],                   // [{ cardIdx, status, error, entries, t0, t1 }]
         embedded: [],                // [{ cardName, entries: [internalEntry, ...] }]
         previewRows: [],             // editable entries for step 6
         abortController: null,
@@ -200,6 +201,10 @@ function renderStepDest(state) {
                 </select>
             </label>
         </div>
+        <label class="c2l-toggle" style="margin-top:6px;">
+            <input id="c2l-wipe-before" type="checkbox" ${state.wipeBeforeCommit ? 'checked' : ''}>
+            <span><b>Redo from scratch</b> — remove existing <code>[card2lore:*]</code> stamped entries from the target lorebook before committing. Hand-written entries are preserved.</span>
+        </label>
     `;
 }
 
@@ -222,6 +227,15 @@ function renderStepPreflight(state) {
             break;
     }
 
+    // P2.16 cost ceiling — warn if estimated cost > profile.maxEstimatedTokens
+    const ceiling = Number(profile?.maxEstimatedTokens) || 0;
+    const ceilingExceeded = ceiling > 0 && stats.estimatedTokensTotal > ceiling;
+    const ceilingNote = ceiling
+        ? (ceilingExceeded
+            ? `<p class="c2l-hint" style="color:var(--warning, #d7a900);"><b>⚠ Cost ceiling exceeded</b> — profile cap is ${ceiling.toLocaleString()} tokens, estimated ${stats.estimatedTokensTotal.toLocaleString()}. Click Start to override.</p>`
+            : `<p class="c2l-hint">Within profile cost ceiling (${ceiling.toLocaleString()} tokens).</p>`)
+        : '';
+
     return `
         <h3>Confirm</h3>
         <div class="c2l-progress-summary">
@@ -231,32 +245,50 @@ function renderStepPreflight(state) {
             <span>Estimated <b>~${stats.estimatedTokensTotal.toLocaleString()}</b> tokens total</span>
             <span>~${minutes} min sequential (delay ${queueDelay}ms)</span>
         </div>
-        <p class="c2l-hint">Profile: <b>${escapeHtml(getProfile(state.profileId)?.name || '')}</b> · Destination: ${destLabel} · Conflicts: <b>${state.conflictPolicy}</b></p>
+        <p class="c2l-hint">Profile: <b>${escapeHtml(getProfile(state.profileId)?.name || '')}</b> · Destination: ${destLabel} · Conflicts: <b>${state.conflictPolicy}</b>${state.wipeBeforeCommit ? ' · <b>wiping existing card2lore stamps</b>' : ''}</p>
+        ${ceilingNote}
         <p class="c2l-hint">Click Start to run the queue. You can cancel mid-batch — completed entries still appear in preview.</p>
     `;
 }
 
 function renderStepProgress(state) {
+    const now = Date.now();
     const rows = state.queue.map((q, i) => {
         const card = state.cards[i]?.card;
         const icons = { queued: '⏸', running: '⟳', done: '✓', failed: '⚠', skipped: '↷', cancelled: '×' };
+        let elapsedStr = '';
+        if (q.status === 'running' && q.t0) {
+            elapsedStr = `${Math.floor((now - q.t0) / 1000)}s…`;
+        } else if (q.status === 'done' && q.t0 && q.t1) {
+            elapsedStr = `${Math.floor((q.t1 - q.t0) / 1000)}s · ${q.entries?.length || 0} entries`;
+        } else if (q.status === 'failed' && q.error) {
+            elapsedStr = q.error;
+        } else if (q.status === 'skipped') {
+            elapsedStr = 'skipped';
+        }
         return `
             <div class="c2l-progress-row">
                 <span class="c2l-status-icon ${q.status}">${icons[q.status] || '?'}</span>
                 <span class="c2l-progress-name">${escapeHtml(card?.name || '(unknown)')}</span>
-                <span class="c2l-progress-detail">${q.status === 'failed' ? escapeHtml(q.error || 'failed') : ''}</span>
+                <span class="c2l-progress-detail">${escapeHtml(elapsedStr)}</span>
             </div>
         `;
     }).join('');
     const done = state.queue.filter(q => q.status === 'done').length;
     const failed = state.queue.filter(q => q.status === 'failed').length;
+    const skipped = state.queue.filter(q => q.status === 'skipped').length;
     const total = state.queue.length;
+    const totalElapsed = state.queue
+        .filter(q => q.t0)
+        .reduce((sum, q) => sum + ((q.t1 || now) - q.t0), 0);
     return `
         <h3>Running conversion</h3>
         <div class="c2l-progress-summary">
-            <span>Progress: <b>${done + failed}</b> / <b>${total}</b></span>
+            <span>Progress: <b>${done + failed + skipped}</b> / <b>${total}</b></span>
             <span>Done: <b>${done}</b></span>
             <span>Failed: <b>${failed}</b></span>
+            <span>Skipped: <b>${skipped}</b></span>
+            <span>Elapsed: <b>${Math.floor(totalElapsed / 1000)}s</b></span>
         </div>
         <div class="c2l-progress-list">${rows}</div>
         <p class="c2l-hint">When the queue finishes, you'll see all entries (including embedded character_book imports) in the preview step where you can edit before committing.</p>
@@ -264,26 +296,29 @@ function renderStepProgress(state) {
 }
 
 function renderStepPreview(state) {
-    const rows = state.previewRows.map((r, i) => {
-        const tagClass = r.kind === 'embedded' ? 'book' : '';
+    // Group rows by parent card so a 7-section character is one collapsible block.
+    const groups = new Map(); // cardName -> [row indexes]
+    state.previewRows.forEach((r, idx) => {
+        const k = r.cardName || '(unknown)';
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(idx);
+    });
+
+    const groupsHtml = [...groups.entries()].map(([cardName, indexes], gi) => {
+        const kept = indexes.filter(i => !state.previewRows[i].dropped).length;
+        const total = indexes.length;
+        const rowsHtml = indexes.map(i => renderPreviewRow(state.previewRows[i], i)).join('');
         return `
-            <div class="c2l-preview-row ${r.dropped ? 'dropped' : ''}" data-i="${i}">
-                <div class="c2l-preview-head">
-                    <span class="c2l-preview-tag ${tagClass}">${escapeHtml(r.kind)}</span>
-                    <input type="text" class="text_pole c2l-prev-name" value="${escapeHtml(r.comment || '')}" placeholder="Entry name/comment">
-                    <span class="c2l-preview-tag" title="Source card">${escapeHtml(r.cardName)}</span>
-                    <button type="button" class="menu_button danger c2l-prev-drop">${r.dropped ? 'Restore' : 'Drop'}</button>
-                </div>
-                <input type="text" class="text_pole c2l-prev-keys" value="${escapeHtml((r.keys || []).join(', '))}" placeholder="Primary keys (comma-separated)">
-                <input type="text" class="text_pole c2l-prev-skeys" value="${escapeHtml((r.secondaryKeys || []).join(', '))}" placeholder="Secondary keys (optional, comma-separated)" style="margin-top:3px;">
-                <textarea class="text_pole textarea_compact c2l-prev-content" rows="7">${escapeHtml(r.content || '')}</textarea>
-                <div class="c2l-preview-meta">
-                    <label><input type="checkbox" class="c2l-prev-constant" ${r.constant ? 'checked' : ''}> constant (always on)</label>
-                    <label><input type="checkbox" class="c2l-prev-selective" ${r.selective ? 'checked' : ''}> selective (key-gated)</label>
-                    <label>order <input type="number" class="c2l-prev-order" value="${Number.isFinite(r.order) ? r.order : 100}" style="width:70px"></label>
-                    <label>probability <input type="number" class="c2l-prev-prob" min="0" max="100" value="${Number.isFinite(r.probability) ? r.probability : 100}" style="width:60px">%</label>
-                </div>
-            </div>
+            <details class="c2l-preview-group" open data-card="${escapeHtml(cardName)}">
+                <summary class="c2l-preview-group-head">
+                    <span class="c2l-preview-group-name">${escapeHtml(cardName)}</span>
+                    <span class="c2l-preview-group-count">${kept}/${total} entries kept</span>
+                    <span style="flex:1"></span>
+                    <button type="button" class="menu_button c2l-group-drop" data-card="${escapeHtml(cardName)}">Drop all</button>
+                    <button type="button" class="menu_button c2l-group-restore" data-card="${escapeHtml(cardName)}">Restore all</button>
+                </summary>
+                <div class="c2l-preview-group-body">${rowsHtml}</div>
+            </details>
         `;
     }).join('');
 
@@ -291,12 +326,42 @@ function renderStepPreview(state) {
     const kept = state.previewRows.filter(r => !r.dropped).length;
     const profile = getProfile(state.profileId);
     const modeNote = profile?.entrySplitMode === 'modular'
-        ? `Modular mode — each card produced up to 7 sub-entries (anchor / appearance / personality / voice / background / relationships / quirks) with their own keys, order, and constant flags.`
+        ? `Modular mode — each card produces up to 7 sub-entries with section-specific keys.`
         : `Flat mode — one entry per card.`;
     return `
         <h3>Preview &amp; edit</h3>
-        <p class="c2l-hint"><b>${kept}</b> of <b>${total}</b> entries will be committed. ${modeNote} Edit fields inline, drop bad rows, then commit.</p>
-        <div class="c2l-preview-table">${rows || '<p style="padding:8px; opacity:0.7;">No entries to preview.</p>'}</div>
+        <p class="c2l-hint"><b>${kept}</b> of <b>${total}</b> entries will be committed. ${modeNote}</p>
+        <div class="c2l-bulk-bar">
+            <label>Bulk actions:</label>
+            <button type="button" class="menu_button" data-bulk="drop-section" data-section="background">Drop all background</button>
+            <button type="button" class="menu_button" data-bulk="drop-section" data-section="quirks">Drop all quirks</button>
+            <button type="button" class="menu_button" data-bulk="set-prob">Set all probability to…</button>
+            <button type="button" class="menu_button" data-bulk="set-constant">All constant on</button>
+            <button type="button" class="menu_button" data-bulk="set-selective">All selective on</button>
+        </div>
+        <div class="c2l-preview-table">${groupsHtml || '<p style="padding:8px; opacity:0.7;">No entries to preview.</p>'}</div>
+    `;
+}
+
+function renderPreviewRow(r, i) {
+    const tagClass = r.kind === 'embedded' ? 'book' : '';
+    return `
+        <div class="c2l-preview-row ${r.dropped ? 'dropped' : ''}" data-i="${i}">
+            <div class="c2l-preview-head">
+                <span class="c2l-preview-tag ${tagClass}">${escapeHtml(r.kind)}</span>
+                <input type="text" class="text_pole c2l-prev-name" value="${escapeHtml(r.comment || '')}" placeholder="Entry name/comment">
+                <button type="button" class="menu_button danger c2l-prev-drop">${r.dropped ? 'Restore' : 'Drop'}</button>
+            </div>
+            <input type="text" class="text_pole c2l-prev-keys" value="${escapeHtml((r.keys || []).join(', '))}" placeholder="Primary keys (comma-separated)">
+            <input type="text" class="text_pole c2l-prev-skeys" value="${escapeHtml((r.secondaryKeys || []).join(', '))}" placeholder="Secondary keys (optional)" style="margin-top:3px;">
+            <textarea class="text_pole textarea_compact c2l-prev-content" rows="6">${escapeHtml(r.content || '')}</textarea>
+            <div class="c2l-preview-meta">
+                <label><input type="checkbox" class="c2l-prev-constant" ${r.constant ? 'checked' : ''}> constant</label>
+                <label><input type="checkbox" class="c2l-prev-selective" ${r.selective ? 'checked' : ''}> selective</label>
+                <label>order <input type="number" class="c2l-prev-order" value="${Number.isFinite(r.order) ? r.order : 100}" style="width:70px"></label>
+                <label>probability <input type="number" class="c2l-prev-prob" min="0" max="100" value="${Number.isFinite(r.probability) ? r.probability : 100}" style="width:60px">%</label>
+            </div>
+        </div>
     `;
 }
 
@@ -365,9 +430,58 @@ function attachStepHandlers(state, refresh) {
         root.querySelector('#c2l-conflict')?.addEventListener('change', (e) => {
             state.conflictPolicy = e.target.value;
         });
+        root.querySelector('#c2l-wipe-before')?.addEventListener('change', (e) => {
+            state.wipeBeforeCommit = e.target.checked;
+        });
     }
 
     if (state.currentStep === 'preview') {
+        // Group-level Drop all / Restore all
+        root.querySelectorAll('.c2l-group-drop').forEach(b => {
+            b.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const card = b.dataset.card;
+                state.previewRows.forEach(r => { if (r.cardName === card) r.dropped = true; });
+                refresh();
+            });
+        });
+        root.querySelectorAll('.c2l-group-restore').forEach(b => {
+            b.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const card = b.dataset.card;
+                state.previewRows.forEach(r => { if (r.cardName === card) r.dropped = false; });
+                refresh();
+            });
+        });
+        // Top-level bulk actions
+        root.querySelectorAll('[data-bulk]').forEach(b => {
+            b.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const action = b.dataset.bulk;
+                if (action === 'drop-section') {
+                    const section = b.dataset.section;
+                    state.previewRows.forEach(r => {
+                        if (String(r._origin?.section || '').toLowerCase() === section) r.dropped = true;
+                    });
+                    refresh();
+                } else if (action === 'set-prob') {
+                    const val = prompt('Set probability for all entries (0-100):', '100');
+                    if (val === null) return;
+                    const n = Math.max(0, Math.min(100, Number(val) || 100));
+                    state.previewRows.forEach(r => {
+                        r.probability = n;
+                        r.useProbability = n < 100;
+                    });
+                    refresh();
+                } else if (action === 'set-constant') {
+                    state.previewRows.forEach(r => { r.constant = true; r.selective = false; });
+                    refresh();
+                } else if (action === 'set-selective') {
+                    state.previewRows.forEach(r => { r.constant = false; r.selective = true; });
+                    refresh();
+                }
+            });
+        });
         root.querySelectorAll('.c2l-preview-row').forEach(rowEl => {
             const i = Number(rowEl.dataset.i);
             const r = state.previewRows[i];
@@ -402,59 +516,157 @@ function attachStepHandlers(state, refresh) {
 
 async function runQueue(state, refresh) {
     const profile = getProfile(state.profileId);
-    state.queue = state.cards.map(() => ({ status: 'queued', error: null, entries: null }));
+    state.queue = state.cards.map(() => ({
+        status: 'queued',
+        error: null,
+        entries: null,
+        t0: 0,
+        t1: 0,
+    }));
     state.abortController = new AbortController();
     const signal = state.abortController.signal;
     const delay = Math.max(0, Number(settings().queueDelayMs) || 0);
+    const parallelism = Math.max(1, Math.min(8, Number(settings().queueParallelism) || 1));
+
+    // Tick the running rows' elapsed time every second.
+    const tickInterval = setInterval(() => {
+        const anyRunning = state.queue.some(q => q.status === 'running');
+        if (anyRunning) refresh();
+    }, 1000);
 
     refresh();
 
-    for (let i = 0; i < state.cards.length; i++) {
-        if (signal.aborted) {
-            for (let j = i; j < state.queue.length; j++) {
-                if (state.queue[j].status === 'queued') state.queue[j].status = 'cancelled';
-            }
-            break;
+    // Worker — pulls the next queued index and processes it. Multiple workers
+    // run concurrently when parallelism > 1.
+    let nextIdx = 0;
+    const claimNext = () => {
+        while (nextIdx < state.cards.length) {
+            if (signal.aborted) return -1;
+            const i = nextIdx++;
+            if (state.queue[i].status === 'queued') return i;
         }
+        return -1;
+    };
 
-        const { card } = state.cards[i];
-        state.queue[i].status = 'running';
-        refresh();
-
-        if (!hasExtractableContent(card, profile)) {
-            state.queue[i].status = 'skipped';
-            state.queue[i].error = 'no extractable content';
-            toastr.info(`${card.name}: no extractable content, skipped.`, 'Card to Lorebook');
+    async function worker() {
+        while (true) {
+            const i = claimNext();
+            if (i < 0) return;
+            const { card } = state.cards[i];
+            state.queue[i].status = 'running';
+            state.queue[i].t0 = Date.now();
             refresh();
-            continue;
-        }
 
-        try {
-            // convertOneCard always returns an array now (1 entry in flat mode,
-            // N entries in modular mode).
-            const entries = await convertOneCard(card, profile, signal);
-            for (const entry of entries) {
-                const sectionLabel = entry._origin?.sectionLabel || '';
-                entry.comment = sectionLabel
-                    ? makeCardStamp(card.name, '', sectionLabel)
-                    : makeCardStamp(card.name, profile.name);
+            if (!hasExtractableContent(card, profile)) {
+                state.queue[i].status = 'skipped';
+                state.queue[i].error = 'no extractable content';
+                state.queue[i].t1 = Date.now();
+                toastr.info(`${card.name}: no extractable content, skipped.`, 'Card to Lorebook');
+                refresh();
+                continue;
             }
-            state.queue[i].entries = entries;
-            state.queue[i].status = 'done';
-        } catch (e) {
-            if (e?.name === 'AbortError') {
-                state.queue[i].status = 'cancelled';
-            } else {
-                state.queue[i].status = 'failed';
-                state.queue[i].error = String(e?.message || e);
-                err(`convert "${card.name}" failed`, e);
-            }
-        }
-        refresh();
 
-        if (delay > 0 && i < state.cards.length - 1 && !signal.aborted) {
-            await new Promise(res => setTimeout(res, delay));
+            try {
+                const entries = await convertOneCard(card, profile, signal);
+                for (const entry of entries) {
+                    const sectionLabel = entry._origin?.sectionLabel || '';
+                    entry.comment = sectionLabel
+                        ? makeCardStamp(card.name, '', sectionLabel)
+                        : makeCardStamp(card.name, profile.name);
+                }
+                state.queue[i].entries = entries;
+                state.queue[i].status = 'done';
+            } catch (e) {
+                if (e?.name === 'AbortError') {
+                    state.queue[i].status = 'cancelled';
+                } else {
+                    state.queue[i].status = 'failed';
+                    state.queue[i].error = String(e?.message || e);
+                    err(`convert "${card.name}" failed`, e);
+                }
+            }
+            state.queue[i].t1 = Date.now();
+            refresh();
+
+            if (delay > 0 && !signal.aborted) {
+                await new Promise(res => setTimeout(res, delay));
+            }
         }
+    }
+
+    try {
+        const workers = Array.from({ length: parallelism }, () => worker());
+        await Promise.all(workers);
+        // Mark anything still queued as cancelled (only happens if abort fired).
+        for (const q of state.queue) {
+            if (q.status === 'queued') q.status = 'cancelled';
+        }
+    } finally {
+        clearInterval(tickInterval);
+    }
+
+    // P2.15 cross-character relationship linking
+    crossLinkRelationships(state);
+}
+
+/**
+ * Detect bidirectional relationship mentions among the selected cards.
+ * If Card A's "relationships" entry mentions Card B (in keys, secondaryKeys,
+ * or content) AND vice versa, ensure each entry has the other card's name
+ * in its primary keys. This makes the AND-gated relationships fire correctly.
+ */
+function crossLinkRelationships(state) {
+    const namesSel = new Set(
+        state.cards.map(c => String(c.card?.name || '').toLowerCase()).filter(Boolean),
+    );
+
+    // Pull all relationships entries per card.
+    const relByCard = new Map(); // cardName(lower) -> entry
+    for (let i = 0; i < state.queue.length; i++) {
+        const q = state.queue[i];
+        if (q.status !== 'done' || !Array.isArray(q.entries)) continue;
+        const cardName = String(state.cards[i].card?.name || '').toLowerCase();
+        if (!cardName) continue;
+        const rel = q.entries.find(e => String(e._origin?.section || '').toLowerCase() === 'relationships');
+        if (rel) relByCard.set(cardName, rel);
+    }
+
+    // For each pair of selected cards with rel entries, check bidirectional mention.
+    const cardNames = [...relByCard.keys()];
+    let linkedCount = 0;
+    for (let i = 0; i < cardNames.length; i++) {
+        for (let j = i + 1; j < cardNames.length; j++) {
+            const a = cardNames[i];
+            const b = cardNames[j];
+            const ea = relByCard.get(a);
+            const eb = relByCard.get(b);
+            const aMentionsB = entryMentions(ea, b);
+            const bMentionsA = entryMentions(eb, a);
+            if (aMentionsB && bMentionsA) {
+                ensureKeyPresent(ea, b);
+                ensureKeyPresent(eb, a);
+                linkedCount++;
+            }
+        }
+    }
+    if (linkedCount > 0) log(`crossLinkRelationships: linked ${linkedCount} bidirectional pair(s)`);
+}
+
+function entryMentions(entry, name) {
+    if (!entry) return false;
+    const lowerName = String(name || '').toLowerCase();
+    const inKeys = (entry.keys || []).some(k => String(k).toLowerCase() === lowerName);
+    const inSec = (entry.secondaryKeys || []).some(k => String(k).toLowerCase() === lowerName);
+    const inContent = String(entry.content || '').toLowerCase().includes(lowerName);
+    return inKeys || inSec || inContent;
+}
+
+function ensureKeyPresent(entry, name) {
+    if (!entry) return;
+    const lower = String(name || '').toLowerCase();
+    const proper = name.replace(/\b\w/g, c => c.toUpperCase());
+    if (!(entry.keys || []).some(k => String(k).toLowerCase() === lower)) {
+        entry.keys = [...(entry.keys || []), proper];
     }
 }
 
@@ -632,6 +844,18 @@ export async function openWizard(selectedIds) {
                         state.previewRows = buildPreviewRows(state);
                         state.currentStep = 'preview';
                         refresh();
+                        try {
+                            const { eventSource } = await import('/script.js');
+                            await eventSource.emit('cards-to-lore.queue.done', {
+                                cards: state.cards.map(c => c.card?.name),
+                                profileId: state.profileId,
+                                results: state.queue.map(q => ({
+                                    status: q.status,
+                                    entriesCount: q.entries?.length || 0,
+                                    error: q.error,
+                                })),
+                            });
+                        } catch (e) { /* ignore */ }
                     }
                     return;
                 }
@@ -654,10 +878,34 @@ export async function openWizard(selectedIds) {
                     btn.disabled = true;
                     btn.textContent = 'Committing…';
                     try {
+                        // P1.12 redo-from-scratch: wipe existing card2lore stamps in the
+                        // target lorebook first (only meaningful for existing/chat destinations).
+                        if (state.wipeBeforeCommit && (state.destination.mode === 'existing' || state.destination.mode === 'chat')) {
+                            const bookName = state.destination.name;
+                            if (bookName) {
+                                try {
+                                    const removed = await removeStampedEntries(bookName);
+                                    if (removed > 0) {
+                                        toastr.info(`Removed ${removed} existing card2lore entries from ${bookName}.`, 'Card to Lorebook');
+                                    }
+                                } catch (e) {
+                                    warn('wipe-before-commit failed', e);
+                                }
+                            }
+                        }
                         commitResult = await commitEntries(state.destination, entries, state.conflictPolicy);
                         state.currentStep = 'done';
                         refresh();
                         toastr.success(`Wrote ${commitResult.written} entries to ${commitResult.target}.`, 'Card to Lorebook');
+                        // P2.18 event emission
+                        try {
+                            const { eventSource } = await import('/script.js');
+                            await eventSource.emit('cards-to-lore.committed', {
+                                destination: state.destination,
+                                result: commitResult,
+                                entriesCount: entries.length,
+                            });
+                        } catch (e) { /* ignore */ }
                     } catch (e) {
                         err('Commit failed', e);
                         toastr.error(String(e?.message || e), 'Commit failed');

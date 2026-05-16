@@ -6,7 +6,12 @@
 import { characters } from '/script.js';
 
 import { CARD_FIELDS } from './profiles.js';
-import { estimateTokens, log } from './core.js';
+import { estimateTokens, sanitizeContent, log } from './core.js';
+import { sanitizeKeyList } from './keyHygiene.js';
+
+// Hard cap on embedded book entry content — some embedded entries are huge
+// and don't deserve full inclusion. ~4000 chars ≈ 1000 tokens.
+const EMBEDDED_CONTENT_CHAR_CAP = 4000;
 
 /**
  * Get the character object for a given ST character index (the IDs in
@@ -74,38 +79,88 @@ export function getEmbeddedBookEntries(card) {
     const book = card?.data?.character_book;
     if (!book || typeof book !== 'object') return [];
     const entries = Array.isArray(book.entries) ? book.entries : [];
-    return entries.map(e => normaliseEmbeddedEntry(e, card.name));
+    const out = [];
+    const seenSig = new Set();
+    for (const raw of entries) {
+        const cleaned = normaliseEmbeddedEntry(raw, card.name);
+        if (!cleaned) continue; // dropped (empty content, etc)
+        // Dedup against itself — embedded books sometimes ship duplicates.
+        const sig = `${cleaned.content.slice(0, 80)}::${cleaned.keys.join(',')}`;
+        if (seenSig.has(sig)) continue;
+        seenSig.add(sig);
+        out.push(cleaned);
+    }
+    return out;
 }
 
 /**
  * Convert a V2 character_book entry into our internal entry shape that
- * lorebookIO knows how to write. We keep the source data verbatim.
+ * lorebookIO knows how to write. Applies hygiene:
+ *   - sanitises content (strip fences, dangerous HTML, blank-line runs)
+ *   - caps content at EMBEDDED_CONTENT_CHAR_CAP chars
+ *   - sanitises keys (stopwords, length, cap)
+ *   - drops the entry entirely if content is empty after sanitisation
+ *   - drops the entry if its only content is the card name verbatim
+ *
+ * Returns null if the entry should be skipped.
  */
 function normaliseEmbeddedEntry(raw, cardName) {
-    const keys = []
-        .concat(Array.isArray(raw.keys) ? raw.keys : [])
-        .map(s => String(s || '').trim())
-        .filter(Boolean);
-    const secondaryKeys = []
-        .concat(Array.isArray(raw.secondary_keys) ? raw.secondary_keys : [])
-        .map(s => String(s || '').trim())
-        .filter(Boolean);
+    let content = sanitizeContent(String(raw.content || ''));
+    if (!content) return null;
+    if (content.length > EMBEDDED_CONTENT_CHAR_CAP) {
+        content = content.slice(0, EMBEDDED_CONTENT_CHAR_CAP).trim() + '…';
+    }
+    // Drop entries that are just the card name verbatim (rare but happens).
+    if (content.trim().toLowerCase() === String(cardName || '').toLowerCase()) return null;
+
+    const rawPrimary = Array.isArray(raw.keys) ? raw.keys : [];
+    const rawSecondary = Array.isArray(raw.secondary_keys) ? raw.secondary_keys : [];
+
+    const keys = sanitizeKeyList(rawPrimary, { maxKeys: 12 });
+    const secondaryKeys = sanitizeKeyList(rawSecondary, { maxKeys: 6 });
+
     return {
-        // Internal shape — converted by lorebookIO.addEntry()
         keys,
         secondaryKeys,
-        content: String(raw.content || '').trim(),
+        content,
         comment: String(raw.comment || raw.name || keys[0] || `${cardName} entry`),
         constant: !!raw.constant,
         selective: !!raw.selective,
         order: Number.isFinite(raw.insertion_order) ? raw.insertion_order : 100,
         position: Number.isFinite(raw.position) ? raw.position : 0,
-        // Origin metadata
         _origin: {
             source: 'embedded',
             cardName,
         },
     };
+}
+
+/**
+ * Heuristic importance detection — scans the card text for cues that strongly
+ * suggest this is a main / POV / protagonist character vs a side character.
+ * Used as a hint surfaced into the AI prompt. AI can still override.
+ *
+ * Returns: 'main' | 'supporting' | 'minor' | null (if no signal).
+ */
+export function detectImportance(card) {
+    if (!card) return null;
+    const text = [
+        card.name, card.description, card.personality, card.scenario,
+        card.first_mes, card.mes_example, card.creator_notes,
+    ].map(v => String(v ?? '')).join('\n').toLowerCase();
+
+    const mainCues = [
+        /main\s+character/, /\bprotagonist\b/, /\bpov\b/, /point[ -]of[ -]view/,
+        /\{\{user\}\}'s? (?:girlfriend|boyfriend|wife|husband|lover|partner|best friend|childhood friend)/,
+        /the player (?:plays|controls)/, /you play as/,
+    ];
+    const minorCues = [
+        /\bminor\b/, /\bbit[- ]?part\b/, /background character/, /mentioned (?:in|only)/,
+    ];
+
+    for (const re of mainCues) { if (re.test(text)) return 'main'; }
+    for (const re of minorCues) { if (re.test(text)) return 'minor'; }
+    return 'supporting';
 }
 
 /**

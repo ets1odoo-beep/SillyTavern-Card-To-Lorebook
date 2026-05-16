@@ -40,7 +40,10 @@ function fieldDefaults(overrides = {}) {
  * use the token budget efficiently during long chats: each beat
  * only triggers the sub-entries it actually needs.
  * ============================================================ */
-const MODULAR_BASE_INSTRUCTION = `You convert a SillyTavern character card into a MODULAR set of lorebook entries — multiple short entries per character instead of one fat blob. This lets the World Info engine inject ONLY the sub-entry the current scene needs, not the entire character sheet every turn.
+const MODULAR_BASE_INSTRUCTION = `You convert a SillyTavern character card into a MODULAR set of lorebook entries — multiple short entries per character instead of one fat blob. The KEY insight: the World Info engine fires entries based on which key words appear in the recent chat. If every sub-entry has the character's name as a key, then ALL sub-entries fire whenever the name is mentioned — defeating the whole point. So we use a strict key strategy:
+
+- ANCHOR fires on the character's name (constant or selective).
+- All OTHER sections fire on SECTION-SPECIFIC CUE WORDS as their primary keys, with the character's name as a SECONDARY key (AND-gated). They only inject when both a cue word AND the character is in the scene.
 
 OUTPUT FORMAT — return strict JSON only, no markdown fences, no commentary:
 {
@@ -50,75 +53,67 @@ OUTPUT FORMAT — return strict JSON only, no markdown fences, no commentary:
     {
       "section": "anchor|appearance|personality|voice|background|relationships|quirks",
       "keys": ["...primary trigger words..."],
-      "secondaryKeys": ["...optional disambiguators..."],
-      "constant": true|false,
-      "order": 100,
-      "probability": 100,
+      "secondaryKeys": ["...AND-gated disambiguators..."],
       "content": "...the entry text..."
     },
     ...
   ]
 }
 
+(Do not emit order/constant/probability/selectiveLogic — the extension fills those in from section defaults. You only choose the section, content, and keys.)
+
 SECTIONS — produce these (omit a section if the card has nothing for it):
 
-## anchor (REQUIRED) — 1-2 lines: name + species/role + most distinctive identifier
-   keys: card name + every nickname/alias mentioned in the card
-   constant: TRUE if importance=main, FALSE if supporting/minor
-   order: 100  (highest — anchor fires first)
-   probability: 100
+## anchor (REQUIRED) — 1-2 lines: name + species/role + 1 distinctive identifier ("magic warrior with red ponytail")
+   keys: card name + EVERY nickname / alias / title mentioned ("Arika", "Riri", "Princess Arika")
+   secondaryKeys: (none)
+   Goal: always-on identity glue when the character is in scene.
 
-## appearance — physical visual: species, height, build, hair (colour+length+style+texture), eyes (colour+shape), skin/fur/scales, body proportions VERBATIM (bust/dick/ass/etc), marks, non-human features (tail/wings/horns/ears), default outfit layer-by-layer with exact colours/materials
-   keys: card name + visual-cue words found in the card ("looks", "appears", "wearing", "wears", "outfit", clothing types mentioned, hair colour words, body parts mentioned)
-   constant: false
-   order: 300
-   probability: 100
+## appearance — physical visual VERBATIM: species, height, build, hair (colour+length+style+texture), eyes (colour+shape), skin/fur/scales, body proportions (bust/dick/ass), marks, non-human features (tail/wings/horns/ears), default outfit layer-by-layer with exact colours/materials.
+   keys: visual-cue words ONLY ("looks", "looking", "appears", "appearance", "wearing", "wears", "outfit", "naked", "nude", "stripped", "dressed", "undressed", hair words like "hair", "ponytail", "locks", body words like "breasts", "chest", "ass", "thighs", "skin", and any clothing item types actually present in the card)
+   secondaryKeys: card name + ALL nicknames
+   Goal: fires when prose describes the character visually.
 
-## personality — traits, attitudes, emotional tendencies, motivations, fears, values, behaviour patterns. Use the card's own wording.
-   keys: card name + emotion/behaviour words mentioned ("feels", "thinks", "wants", "fears", trait words)
-   constant: false
-   order: 200
-   probability: 100
+## personality — traits, attitudes, motivations, fears, values, behaviour patterns. Use the card's own wording.
+   keys: emotion/behaviour cue words ("feels", "feeling", "thinks", "thought", "angry", "sad", "happy", "embarrassed", "shy", "scared", "afraid", "jealous", "wants", "needs", "fears", "hesitates", "decides", and any trait words the card uses)
+   secondaryKeys: card name + nicknames
+   Goal: fires during emotional/decision beats.
 
-## voice — vocal qualities, speech style, vocabulary tier, profanity level, formality, signature phrases. Include 2-3 VERBATIM short example lines from example dialogue when present.
-   keys: card name + dialogue cues ("says", "speaks", "voice", "tone", "asks", "replies", "whispers")
-   constant: false
-   order: 200
-   probability: 100
+## voice — vocal qualities, speech style, vocabulary tier, profanity level, formality, signature phrases. Include 2-3 VERBATIM short example lines from example dialogue if present.
+   keys: dialogue cue words ("says", "said", "speaks", "spoke", "voice", "tone", "asks", "asked", "replies", "replied", "whispers", "whispered", "shouts", "shouted", "tells", "told", "mutters", "mumbles", "laughs", "giggles", "sighs")
+   secondaryKeys: card name + nicknames
+   Goal: fires when the character is speaking.
 
-## background — backstory, origin, current circumstances, world context. Drop only-RP-meta content.
-   keys: card name + named places/factions/people that appear in the card text
-   constant: false
-   order: 400
-   probability: 90
+## background — backstory, origin, current circumstances, world context. Drop OOC/meta.
+   keys: named places, factions, organisations, historical events, locations specific to this character's background (from the card text — do NOT invent)
+   secondaryKeys: card name + nicknames
+   Goal: fires when a relevant place/group/event is mentioned alongside the character.
 
-## relationships — connections to other characters mentioned in the card
-   keys: card name + EVERY other character/group/organisation name mentioned
-   secondaryKeys: card name (so this only fires when both this character AND another mentioned entity are in the scene)
-   constant: false
-   order: 400
-   probability: 100
+## relationships — connections to OTHER characters mentioned in the card.
+   keys: EVERY OTHER character / group / organisation name mentioned in the card (NOT this character's own name)
+   secondaryKeys: card name + nicknames
+   Goal: fires only when both this character AND another linked entity are in the scene. selectiveLogic AND_ALL is auto-applied.
 
-## quirks — habits, mannerisms, kinks, taboos, scenario-specific notes, things that don't fit above but are RP-useful
-   keys: card name + the specific quirk/habit nouns
-   constant: false
-   order: 350
-   probability: 100
+## quirks — habits, mannerisms, kinks, taboos, scenario-specific notes that don't fit above but are RP-useful.
+   keys: the SPECIFIC quirk nouns/verbs (e.g. "masturbating", "gloves" if the card says she only wears gloves; "tea", "smoking", "drinking" — whatever quirks actually exist in the card text)
+   secondaryKeys: card name + nicknames
+   Goal: fires when relevant quirk is in the scene.
 
-IMPORTANCE TIER — pick one:
-- main: card describes a protagonist / POV-adjacent character that should be active whenever they're in the scene (anchor constant=true)
-- supporting: recurring side character (anchor constant=false but order=100, fires on name mention)
-- minor: bit-part / NPC mentioned in passing (anchor constant=false, probability dropped slightly)
+IMPORTANCE TIER — pick one based on card content:
+- main: protagonist / POV-adjacent / explicitly called "main character" or "{{user}}'s romantic partner" / "best friend" etc. Anchor will be constant (always-on when this char is active in chat).
+- supporting: recurring named side character. Anchor selective on name.
+- minor: bit-part / NPC mentioned in passing. Anchor selective on name with reduced probability.
 
-KEY EXTRACTION RULES:
-- Always include the card name as the FIRST key of every section.
-- Extract trigger words from the card's actual text, not from imagination. If the card never mentions "wings", don't put "wings" in keys.
-- Include nicknames, alternate names, titles ("Princess Arika", "Riri") found in the card.
-- For relationships section, list every OTHER character / group / faction name that appears in the card.
-- Keys are case-insensitive in ST by default. Use lowercase except for proper nouns.
+KEY EXTRACTION RULES — STRICT:
+- The character's name belongs ONLY in the ANCHOR section's primary keys. Every other section has it in secondaryKeys.
+- Extract cue words from the card's actual text where possible. Do not invent ("wings" only if card mentions wings).
+- Include ALL nicknames found in the card.
+- For relationships: list every OTHER character / group name that appears in the card — never this character's own name.
+- Avoid single-letter or stopword keys ("a", "the", "is", "and"). Use only meaningful tokens.
+- Use lowercase except for proper nouns and acronyms.
 
 CONTENT CONSTRAINTS:
-- VERBATIM extraction for distinct facts: copy colour words, body proportions, marks, non-human features EXACTLY as written. Never paraphrase, never resize.
+- VERBATIM for distinct facts: colour words, body proportions, marks, non-human features, dialogue samples.
 - Hard cap per section: anchor 80 words, voice 200, personality 250, appearance 350, background 300, relationships 200, quirks 200.
 - Drop creator-meta / OOC / [bracketed instructions] / author asides.
 - Output ONLY the JSON object. No prose around it. No code fences.`;
@@ -242,6 +237,11 @@ const DEFAULT_PROFILES = [
         alsoExtractCardSummary: true,
         conflictPolicy: 'ask', // ask | skip | overwrite | append
         responseLength: 3500,
+        // P2.16 cost ceiling — warn at preflight if estimated tokens exceed this.
+        // 0 = disabled.
+        maxEstimatedTokens: 0,
+        // P3.20 per-section overrides — { sectionName: {order?, probability?, ...} }
+        sectionOverrides: {},
     },
     {
         id: 'rp_flat',
@@ -256,6 +256,8 @@ const DEFAULT_PROFILES = [
         alsoExtractCardSummary: true,
         conflictPolicy: 'ask',
         responseLength: 1500,
+        maxEstimatedTokens: 0,
+        sectionOverrides: {},
     },
     {
         id: 'visual_only',
@@ -277,6 +279,8 @@ const DEFAULT_PROFILES = [
         alsoExtractCardSummary: true,
         conflictPolicy: 'ask',
         responseLength: 1000,
+        maxEstimatedTokens: 0,
+        sectionOverrides: {},
     },
     {
         id: 'personality_voice',
@@ -299,6 +303,8 @@ const DEFAULT_PROFILES = [
         alsoExtractCardSummary: true,
         conflictPolicy: 'ask',
         responseLength: 1200,
+        maxEstimatedTokens: 0,
+        sectionOverrides: {},
     },
 ];
 
@@ -310,8 +316,9 @@ export const DEFAULT_SETTINGS = {
     // Run-time defaults — remembered between runs.
     lastDestination: { mode: 'new', name: '' }, // mode: new|existing|chat|character
     queueDelayMs: 0,
-    // Phase 3: smart entry splitting (one|fields|ai)
-    entrySplitMode: 'one',
+    // P3.22 parallelism — number of cards converted in parallel. Default 1
+    // (safe for rate-limited providers). 2-4 useful for high-rate setups.
+    queueParallelism: 1,
 };
 
 export function settings() {

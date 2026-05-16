@@ -17,6 +17,7 @@ import { installToolbarButton } from './src/toolbarButton.js';
 import { mountSettingsPanel } from './settings.js';
 import { settings, getProfile, listProfiles, setSelectedProfile } from './src/profiles.js';
 import { openWizard } from './src/wizard.js';
+import { removeStampedEntries } from './src/lorebookIO.js';
 import { log, warn, err, EXT_KEY } from './src/core.js';
 
 function getBulkOverlay() {
@@ -62,6 +63,41 @@ function registerSlashCommand() {
         log('slash command /cards-to-lore registered');
     } catch (e) {
         warn('slash command registration failed', e);
+    }
+
+    // P2.17 cleanup slash command — remove all card2lore-stamped entries
+    // from the named lorebook. Hand-written entries are preserved.
+    try {
+        SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+            name: 'cards-to-lore-clean',
+            callback: async (args) => {
+                const book = String(args?.book || '').trim();
+                if (!book) {
+                    toastr.warning('Usage: /cards-to-lore-clean book=<lorebookName>', 'Card to Lorebook');
+                    return '';
+                }
+                try {
+                    const removed = await removeStampedEntries(book);
+                    toastr.success(`Removed ${removed} card2lore entries from "${book}".`, 'Card to Lorebook');
+                    return String(removed);
+                } catch (e) {
+                    toastr.error(String(e?.message || e), 'Cleanup failed');
+                    return '';
+                }
+            },
+            namedArgumentList: [
+                SlashCommandArgument.fromProps({
+                    name: 'book',
+                    description: 'lorebook name (required)',
+                    typeList: [ARGUMENT_TYPE.STRING],
+                    isRequired: true,
+                }),
+            ],
+            helpString: 'Remove every entry stamped by Card to Lorebook from the named lorebook. Hand-written entries are kept.',
+        }));
+        log('slash command /cards-to-lore-clean registered');
+    } catch (e) {
+        warn('cleanup slash command registration failed', e);
     }
 }
 

@@ -19,10 +19,16 @@
 
             <div class="c2l-section">
                 <h4>Queue behavior</h4>
-                <label>
-                    <span>Delay between AI calls (ms) — bump if your provider rate-limits</span>
-                    <input id="c2l-queue-delay" type="number" min="0" max="60000" step="100" class="text_pole" value="0">
-                </label>
+                <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                    <label style="flex:1; min-width:180px;">
+                        <span>Delay between AI calls (ms)</span>
+                        <input id="c2l-queue-delay" type="number" min="0" max="60000" step="100" class="text_pole" value="0">
+                    </label>
+                    <label style="flex:1; min-width:180px;">
+                        <span>Parallel workers (1 = safe, &gt;1 for fast providers)</span>
+                        <input id="c2l-queue-parallel" type="number" min="1" max="8" step="1" class="text_pole" value="1">
+                    </label>
+                </div>
             </div>
 
             <div class="c2l-section">
@@ -91,11 +97,35 @@
                     <span>Also extract a card-level summary entry (in addition to embedded book entries)</span>
                 </label>
 
+                <label style="margin-top:8px; display:block;">
+                    <span>Cost ceiling — warn if estimated tokens exceed this (0 = disabled)</span>
+                    <input id="c2l-prof-max-tokens" type="number" min="0" max="2000000" step="1000" class="text_pole" value="0">
+                </label>
+
                 <h4 style="margin-top:10px;">Card fields fed to the AI</h4>
                 <div id="c2l-prof-fields" class="c2l-field-grid"></div>
 
-                <div style="margin-top:10px; display:flex; gap:8px;">
+                <h4 style="margin-top:10px;">Section overrides (modular mode)</h4>
+                <p style="opacity:0.65; font-size:0.85em; margin:0 0 6px;">
+                    Per-section knobs for order / probability / constant. Empty cell = use built-in default.
+                    You can also add a custom section name (e.g. "combat_stats") and the AI will produce it
+                    if you mention it in the base instruction.
+                </p>
+                <div id="c2l-prof-sections" class="c2l-section-overrides"></div>
+                <div style="margin-top:6px; display:flex; gap:6px;">
+                    <input id="c2l-prof-section-add-name" type="text" class="text_pole" placeholder="Custom section name…" style="flex:1; max-width:200px;">
+                    <button id="c2l-prof-section-add" class="menu_button" type="button">Add section</button>
+                </div>
+
+                <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
                     <button id="c2l-prof-save" class="menu_button" type="button">Save profile</button>
+                    <span style="opacity:0.5;">|</span>
+                    <span style="opacity:0.75; font-size:0.85em;">Test profile on:</span>
+                    <select id="c2l-prof-test-char" class="text_pole" style="flex:1; max-width:240px;"></select>
+                    <button id="c2l-prof-test-run" class="menu_button" type="button">Run test</button>
+                    <button id="c2l-prof-export" class="menu_button" type="button" title="Export this profile as JSON">⬇ Export</button>
+                    <label for="c2l-prof-import-file" class="menu_button" title="Import profile from JSON">⬆ Import</label>
+                    <input id="c2l-prof-import-file" type="file" accept="application/json" style="display:none">
                 </div>
             </div>
 

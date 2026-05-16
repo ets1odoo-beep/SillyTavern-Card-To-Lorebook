@@ -7,8 +7,9 @@
 import { generateQuietPrompt } from '/script.js';
 import { SlashCommandParser } from '/scripts/slash-commands/SlashCommandParser.js';
 
-import { buildCardPromptText } from './cardExtractor.js';
-import { robustJsonParse, trimWords, log, warn } from './core.js';
+import { buildCardPromptText, detectImportance } from './cardExtractor.js';
+import { robustJsonParse, sanitizeContent, trimWords, log, warn } from './core.js';
+import { sanitizeKeyList, sanitizeSecondaryAgainstPrimary } from './keyHygiene.js';
 
 /* ============================================================
  * AI connection profile (same pattern as the persona generator)
@@ -55,10 +56,13 @@ async function switchAiProfile(name) {
  * Prompt assembly
  * ============================================================ */
 
-function buildPrompt(profile, cardText) {
+function buildPrompt(profile, cardText, importanceHint) {
     const baseInstruction = String(profile?.baseInstruction || '').trim();
+    const hint = importanceHint
+        ? `\n\nIMPORTANCE HINT (auto-detected from card text): "${importanceHint}". You may override if the card text clearly suggests a different tier.`
+        : '';
     return [
-        baseInstruction,
+        baseInstruction + hint,
         '',
         '=== CARD CONTENT ===',
         cardText,
@@ -105,25 +109,58 @@ const MODULAR_JSON_SCHEMA = {
     required: ['name', 'entries'],
 };
 
-// Section → default config when the AI omits a field.
-const SECTION_DEFAULTS = {
-    anchor:        { order: 100, probability: 100, constantFor: ['main'],            wordCap: 80  },
-    appearance:    { order: 300, probability: 100, constantFor: [],                  wordCap: 350 },
-    personality:   { order: 200, probability: 100, constantFor: [],                  wordCap: 250 },
-    voice:         { order: 200, probability: 100, constantFor: [],                  wordCap: 200 },
-    background:    { order: 400, probability: 90,  constantFor: [],                  wordCap: 300 },
-    relationships: { order: 400, probability: 100, constantFor: [],                  wordCap: 200 },
-    quirks:        { order: 350, probability: 100, constantFor: [],                  wordCap: 200 },
+// selectiveLogic values mirror ST's world-info AND_ANY (0) / NOT_ALL (1) /
+// NOT_ANY (2) / AND_ALL (3) constants. AND_ALL means primary key must match
+// AND every secondary key must also match — used for relationships so the
+// entry only fires when both this char AND the linked entity are present.
+export const SELECTIVE_LOGIC = { AND_ANY: 0, NOT_ALL: 1, NOT_ANY: 2, AND_ALL: 3 };
+
+// Section → default config. Anchor uses card name as PRIMARY key; everything
+// else uses cue words as primary and card name as SECONDARY (AND-gated).
+// constant: true only for anchor of main importance (always-on identity glue).
+export const SECTION_DEFAULTS = {
+    anchor:        { order: 100, probability: 100, constantFor: ['main'], wordCap: 80,  selectiveLogic: SELECTIVE_LOGIC.AND_ANY,  nameAsPrimary: true  },
+    appearance:    { order: 300, probability: 100, constantFor: [],       wordCap: 350, selectiveLogic: SELECTIVE_LOGIC.AND_ALL, nameAsPrimary: false },
+    personality:   { order: 200, probability: 100, constantFor: [],       wordCap: 250, selectiveLogic: SELECTIVE_LOGIC.AND_ALL, nameAsPrimary: false },
+    voice:         { order: 200, probability: 100, constantFor: [],       wordCap: 200, selectiveLogic: SELECTIVE_LOGIC.AND_ALL, nameAsPrimary: false },
+    background:    { order: 400, probability: 90,  constantFor: [],       wordCap: 300, selectiveLogic: SELECTIVE_LOGIC.AND_ALL, nameAsPrimary: false },
+    relationships: { order: 400, probability: 100, constantFor: [],       wordCap: 200, selectiveLogic: SELECTIVE_LOGIC.AND_ALL, nameAsPrimary: false },
+    quirks:        { order: 350, probability: 100, constantFor: [],       wordCap: 200, selectiveLogic: SELECTIVE_LOGIC.AND_ALL, nameAsPrimary: false },
 };
 
-function sectionDefaultsFor(section, importance) {
-    const def = SECTION_DEFAULTS[String(section || '').toLowerCase()] || SECTION_DEFAULTS.background;
+/**
+ * Resolve section config — built-in defaults can be overridden per-profile via
+ * profile.sectionOverrides[section] = { order?, probability?, constant?,
+ * wordCap?, selectiveLogic? }. Custom sections (not in SECTION_DEFAULTS) fall
+ * back to background defaults unless the profile defines them explicitly.
+ *
+ * @param {string} section
+ * @param {string} importance  main|supporting|minor
+ * @param {object} [profile]   conversion profile for sectionOverrides
+ */
+export function sectionDefaultsFor(section, importance, profile = null) {
+    const key = String(section || '').toLowerCase();
+    const builtin = SECTION_DEFAULTS[key] || SECTION_DEFAULTS.background;
+    const override = profile?.sectionOverrides?.[key] || {};
+
+    const baseConstant = builtin.constantFor.includes(String(importance || '').toLowerCase());
+
     return {
-        order: def.order,
-        probability: def.probability,
-        constant: def.constantFor.includes(String(importance || '').toLowerCase()),
-        wordCap: def.wordCap,
+        order:          Number.isFinite(override.order)          ? override.order          : builtin.order,
+        probability:    Number.isFinite(override.probability)    ? override.probability    : builtin.probability,
+        constant:       typeof override.constant === 'boolean'   ? override.constant       : baseConstant,
+        wordCap:        Number.isFinite(override.wordCap)        ? override.wordCap        : builtin.wordCap,
+        selectiveLogic: Number.isFinite(override.selectiveLogic) ? override.selectiveLogic : builtin.selectiveLogic,
+        nameAsPrimary:  typeof override.nameAsPrimary === 'boolean' ? override.nameAsPrimary : builtin.nameAsPrimary,
     };
+}
+
+/**
+ * Reduce-friendly check for whether a section uses card name as primary
+ * (i.e. anchor) or as a secondary AND-gate (everything else).
+ */
+function isAnchorSection(section) {
+    return String(section || '').toLowerCase() === 'anchor';
 }
 
 /* ============================================================
@@ -145,7 +182,8 @@ export async function convertOneCard(card, profile, signal) {
     const cardText = buildCardPromptText(card, profile);
     if (!cardText) throw new Error('No extractable content for card');
 
-    const prompt = buildPrompt(profile, cardText);
+    const importanceHint = detectImportance(card);
+    const prompt = buildPrompt(profile, cardText, importanceHint);
     const modular = profile.entrySplitMode === 'modular';
     const schema = profile.outputFormat === 'json'
         ? (modular ? MODULAR_JSON_SCHEMA : FLAT_JSON_SCHEMA)
@@ -197,11 +235,12 @@ export async function convertOneCard(card, profile, signal) {
 
 function parsedToEntry(card, parsed, profile) {
     const name = String(parsed?.name || card?.name || 'Unknown').trim();
-    let keys = Array.isArray(parsed?.keys) ? parsed.keys : [name];
-    keys = keys.map(k => String(k || '').trim()).filter(Boolean);
-    if (!keys.length) keys = [name];
+    const keys = sanitizeKeyList(
+        Array.isArray(parsed?.keys) ? parsed.keys : [name],
+        { alwaysInclude: [name], maxKeys: 8 },
+    );
 
-    let content = String(parsed?.content || '').trim();
+    let content = sanitizeContent(String(parsed?.content || ''));
     if (Number.isFinite(profile.wordCap)) content = trimWords(content, profile.wordCap);
 
     return {
@@ -213,6 +252,9 @@ function parsedToEntry(card, parsed, profile) {
         selective: true,
         order: 100,
         position: 0,
+        probability: 100,
+        useProbability: false,
+        selectiveLogic: SELECTIVE_LOGIC.AND_ANY,
         _origin: {
             source: 'card',
             cardName: card?.name || name,
@@ -240,36 +282,73 @@ function parsedToModularEntries(card, parsed, profile) {
         return [parsedToEntry(card, { name: cardName, keys: [cardName], content: parsed?.content || '' }, profile)];
     }
 
+    // Collect every name-form for this card (canonical + AI-supplied nicknames
+    // in the anchor entry). Used as the "always include" gate for anchor
+    // primary keys, and as the secondary AND-gate for every other section.
+    const nameForms = new Set([cardName.toLowerCase()]);
+    const anchorRaw = rawEntries.find(e => String(e?.section || '').toLowerCase() === 'anchor');
+    if (anchorRaw && Array.isArray(anchorRaw.keys)) {
+        for (const k of anchorRaw.keys) {
+            const v = String(k || '').trim();
+            if (v) nameForms.add(v.toLowerCase());
+        }
+    }
+    const nameKeyList = [...nameForms].map(s => {
+        // restore capitalisation of the canonical card name
+        if (s === cardName.toLowerCase()) return cardName;
+        return s.replace(/\b\w/g, c => c.toUpperCase());
+    });
+
     const out = [];
     for (const raw of rawEntries) {
         const section = String(raw?.section || 'misc').toLowerCase();
-        const def = sectionDefaultsFor(section, importance);
+        const def = sectionDefaultsFor(section, importance, profile);
 
-        // Keys: always include cardName as first key, then AI suggestions,
-        // dedup case-insensitive.
-        const seen = new Set();
-        const keys = [];
-        const addKey = (k) => {
-            const v = String(k || '').trim();
-            if (!v) return;
-            const lower = v.toLowerCase();
-            if (seen.has(lower)) return;
-            seen.add(lower);
-            keys.push(v);
-        };
-        addKey(cardName);
-        if (Array.isArray(raw?.keys)) raw.keys.forEach(addKey);
+        let keys;
+        let secondaryKeys;
 
-        const secondaryKeys = Array.isArray(raw?.secondaryKeys)
-            ? raw.secondaryKeys.map(s => String(s || '').trim()).filter(Boolean)
-            : [];
+        if (def.nameAsPrimary) {
+            // Anchor: card name forms are the primary trigger. AI's `keys`
+            // (nicknames/aliases) are merged into primary too.
+            keys = sanitizeKeyList(
+                [...(Array.isArray(raw?.keys) ? raw.keys : []), ...nameKeyList],
+                { alwaysInclude: [cardName], maxKeys: 8 },
+            );
+            secondaryKeys = sanitizeSecondaryAgainstPrimary(
+                keys,
+                Array.isArray(raw?.secondaryKeys) ? raw.secondaryKeys : [],
+                4,
+            );
+        } else {
+            // Non-anchor: AI's `keys` are section-specific cue words → primary.
+            // Card name + nicknames go into secondaryKeys (AND-gated via
+            // selectiveLogic = AND_ALL below).
+            keys = sanitizeKeyList(
+                Array.isArray(raw?.keys) ? raw.keys : [],
+                { maxKeys: 8 },
+            );
+            // AI may have also dropped name into secondaryKeys — merge with
+            // our authoritative name forms.
+            const merged = [
+                ...nameKeyList,
+                ...(Array.isArray(raw?.secondaryKeys) ? raw.secondaryKeys : []),
+            ];
+            secondaryKeys = sanitizeSecondaryAgainstPrimary(keys, merged, 6);
+            // Safety: if AI gave us zero meaningful primary keys, fall back to
+            // anchor-style triggering so the entry isn't dead weight.
+            if (keys.length === 0) {
+                keys = nameKeyList.slice(0, 4);
+                secondaryKeys = [];
+            }
+        }
 
         // Constant: AI override > defaults-by-importance.
         const constant = typeof raw?.constant === 'boolean' ? raw.constant : def.constant;
         const order = Number.isFinite(raw?.order) ? raw.order : def.order;
         const probability = Number.isFinite(raw?.probability) ? raw.probability : def.probability;
+        const selectiveLogic = Number.isFinite(raw?.selectiveLogic) ? raw.selectiveLogic : def.selectiveLogic;
 
-        let content = String(raw?.content || '').trim();
+        let content = sanitizeContent(String(raw?.content || ''));
         if (Number.isFinite(def.wordCap)) content = trimWords(content, def.wordCap);
         if (!content) continue;
 
@@ -289,6 +368,7 @@ function parsedToModularEntries(card, parsed, profile) {
             position: 0,
             probability,
             useProbability: probability < 100,
+            selectiveLogic,
             // Section-driven defaults that ST's createWorldInfoEntry will pick up
             scanDepth: null,
             caseSensitive: null,
@@ -310,15 +390,11 @@ function parsedToModularEntries(card, parsed, profile) {
 }
 
 function textFallbackEntry(card, rawText, profile) {
-    const cleaned = String(rawText || '')
-        .replace(/^```(?:json)?\s*/, '')
-        .replace(/\s*```$/, '')
-        .trim();
     const name = card?.name || 'Unknown';
-    let content = cleaned;
+    let content = sanitizeContent(String(rawText || ''));
     if (Number.isFinite(profile.wordCap)) content = trimWords(content, profile.wordCap);
     return {
-        keys: [name],
+        keys: sanitizeKeyList([name], { alwaysInclude: [name], maxKeys: 4 }),
         secondaryKeys: [],
         content,
         comment: '',
@@ -326,6 +402,9 @@ function textFallbackEntry(card, rawText, profile) {
         selective: true,
         order: 100,
         position: 0,
+        probability: 100,
+        useProbability: false,
+        selectiveLogic: SELECTIVE_LOGIC.AND_ANY,
         _origin: {
             source: 'card-fallback',
             cardName: name,
