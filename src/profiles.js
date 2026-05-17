@@ -439,6 +439,27 @@ export function settings() {
     if (!Array.isArray(s.profiles) || s.profiles.length === 0) {
         s.profiles = structuredClone(DEFAULT_PROFILES);
     }
+    // Refresh built-in profiles from current DEFAULT_PROFILES so prompt fixes
+    // shipped in new versions actually reach upgraders. Without this, saved
+    // profiles from earlier betas keep their stale baseInstruction text forever
+    // (Object.assign at the top preserves the whole profiles array).
+    //
+    // We refresh: name, baseInstruction, builtin marker, and section/entity
+    // type prompt overrides. We preserve user-tunable runtime fields:
+    // includeFields, wordCap, outputFormat, aiConnectionProfile, conflictPolicy,
+    // responseLength, maxEstimatedTokens, generateRoster, alsoExtractCardSummary,
+    // entrySplitMode, sectionOverrides.
+    //
+    // Cloned profiles (id starts with `custom_`) are never touched.
+    for (const defaults of DEFAULT_PROFILES) {
+        const i = s.profiles.findIndex(p => p && p.id === defaults.id);
+        if (i === -1) continue; // user deleted this built-in — respect that
+        const saved = s.profiles[i];
+        if (saved.builtin === false) continue; // user opted out of refresh
+        saved.builtin = true;
+        saved.name = defaults.name;
+        saved.baseInstruction = defaults.baseInstruction;
+    }
     // Ensure built-in profiles still exist (user can delete them; we let them).
     // Ensure selected profile points at something real.
     if (!s.profiles.find(p => p.id === s.selectedProfileId)) {
