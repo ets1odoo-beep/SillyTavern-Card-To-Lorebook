@@ -4,7 +4,7 @@
  * robust JSON parse, retries, and per-call abort.
  */
 
-import { generateQuietPrompt } from '/script.js';
+import { generateRaw } from '/script.js';
 import { SlashCommandParser } from '/scripts/slash-commands/SlashCommandParser.js';
 
 import { buildCardPromptText, detectImportance } from './cardExtractor.js';
@@ -56,6 +56,19 @@ async function switchAiProfile(name) {
  * Prompt assembly
  * ============================================================ */
 
+/**
+ * Build the conversion request as a SYSTEM + USER split for generateRaw.
+ *
+ * CRITICAL: we use generateRaw (not generateQuietPrompt) because the latter
+ * pipes through the active chat — meaning the user's roleplay system prompt,
+ * persona, character card, and world info all get prepended to the request.
+ * That noise (often thousands of tokens of NSFW RP framing) dominates the
+ * conversion instruction and the AI ignores the JSON task entirely, returning
+ * roleplay narration instead of structured output.
+ *
+ * generateRaw bypasses chat context completely and lets us provide the exact
+ * systemPrompt we want. The card text goes in the user prompt.
+ */
 function buildPrompt(profile, cardText, importanceHint, baseContext) {
     const baseInstruction = String(profile?.baseInstruction || '').trim();
     const hint = importanceHint
@@ -64,13 +77,15 @@ function buildPrompt(profile, cardText, importanceHint, baseContext) {
     const adaptationAddendum = baseContext
         ? buildAdaptationAddendum(baseContext) + '\n---\n\n'
         : '';
-    return [
-        adaptationAddendum + baseInstruction + hint,
-        '',
+    const systemPrompt = adaptationAddendum + baseInstruction + hint;
+    const userPrompt = [
         '=== CARD CONTENT ===',
         cardText,
         '=== END CARD CONTENT ===',
+        '',
+        'Now produce the JSON output as specified above. Return ONLY the JSON object, no prose, no fences.',
     ].join('\n');
+    return { systemPrompt, userPrompt };
 }
 
 /* ============================================================
@@ -330,7 +345,7 @@ export async function convertOneCard(card, profile, signal, baseContext = null) 
     if (!cardText) throw new Error('No extractable content for card');
 
     const importanceHint = detectImportance(card);
-    const prompt = buildPrompt(profile, cardText, importanceHint, baseContext);
+    const { systemPrompt, userPrompt } = buildPrompt(profile, cardText, importanceHint, baseContext);
     const modular = profile.entrySplitMode === 'modular';
     const schema = profile.outputFormat === 'json'
         ? (modular ? MODULAR_JSON_SCHEMA : FLAT_JSON_SCHEMA)
@@ -351,11 +366,11 @@ export async function convertOneCard(card, profile, signal, baseContext = null) 
     let reply = '';
     try {
         if (signal?.aborted) throw new DOMException('Conversion cancelled', 'AbortError');
-        reply = await generateQuietPrompt({
-            quietPrompt: prompt,
+        reply = await generateRaw({
+            systemPrompt,
+            prompt: userPrompt,
             responseLength: Number(profile.responseLength) || (modular ? 3500 : 1500),
             jsonSchema: schema,
-            trimToSentence: false,
         });
     } finally {
         if (previousProfile) {
@@ -861,11 +876,13 @@ export async function reprocessEmbeddedBook(embeddedEntries, card, profile, sign
 export async function mergeEntriesViaAI(existing, incoming, profile, signal) {
     if (signal?.aborted) throw new DOMException('Conversion cancelled', 'AbortError');
 
-    const prompt = `You merge two lorebook entries describing the SAME entity. Union the facts, preserve verbatim distinct details from each, dedupe sentences, keep the most informative phrasing. Output strict JSON only.
+    const mergeSystemPrompt = `You merge two lorebook entries describing the SAME entity. Union the facts, preserve verbatim distinct details from each, dedupe sentences, keep the most informative phrasing. Output strict JSON only.
 
-OUTPUT: { "keys": [...], "content": "..." }
+OUTPUT FORMAT: { "keys": [...], "content": "..." }
 
-ENTITY: ${incoming.comment || existing.comment || 'unknown'}
+Output ONLY the JSON object. No prose, no fences.`;
+
+    const mergeUserPrompt = `ENTITY: ${incoming.comment || existing.comment || 'unknown'}
 
 EXISTING CONTENT:
 ${existing.content || ''}
@@ -876,7 +893,7 @@ ${incoming.content || ''}
 EXISTING KEYS: ${(existing.key || []).join(', ')}
 INCOMING KEYS: ${(incoming.keys || []).join(', ')}
 
-Merge them. Output ONLY the JSON.`;
+Merge them.`;
 
     const targetProfileName = getAiProfileName(profile.aiConnectionProfile);
     let previousProfile = '';
@@ -890,11 +907,11 @@ Merge them. Output ONLY the JSON.`;
     }
     let reply = '';
     try {
-        reply = await generateQuietPrompt({
-            quietPrompt: prompt,
+        reply = await generateRaw({
+            systemPrompt: mergeSystemPrompt,
+            prompt: mergeUserPrompt,
             responseLength: Number(profile.responseLength) || 1500,
             jsonSchema: { type: 'object', properties: { keys: { type: 'array' }, content: { type: 'string' } } },
-            trimToSentence: false,
         });
     } finally {
         if (previousProfile) await switchAiProfile(previousProfile);
