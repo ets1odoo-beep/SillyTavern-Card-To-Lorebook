@@ -79,6 +79,7 @@ function renderEditor() {
     $('c2l-prof-output').value = profile.outputFormat || 'json';
     $('c2l-prof-conflict').value = profile.conflictPolicy || 'ask';
     $('c2l-prof-card-summary').checked = profile.alsoExtractCardSummary !== false;
+    if ($('c2l-prof-roster')) $('c2l-prof-roster').checked = profile.generateRoster !== false;
 
     // AI connection profile dropdown.
     const aiProfiles = listAiConnectionProfiles();
@@ -180,6 +181,7 @@ function readEditorIntoProfile() {
     profile.conflictPolicy = $('c2l-prof-conflict').value;
     profile.aiConnectionProfile = $('c2l-prof-ai').value || '';
     profile.alsoExtractCardSummary = $('c2l-prof-card-summary').checked;
+    if ($('c2l-prof-roster')) profile.generateRoster = $('c2l-prof-roster').checked;
     profile.maxEstimatedTokens = Math.max(0, Number($('c2l-prof-max-tokens').value) || 0);
 
     profile.includeFields = profile.includeFields || {};

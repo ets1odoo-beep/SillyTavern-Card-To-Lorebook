@@ -341,6 +341,7 @@ const DEFAULT_PROFILES = [
         // entities) so we need generous output budget.
         responseLength: 8000,
         maxEstimatedTokens: 0,
+        generateRoster: true,
         sectionOverrides: {},
     },
     {
@@ -357,6 +358,7 @@ const DEFAULT_PROFILES = [
         conflictPolicy: 'ask',
         responseLength: 1500,
         maxEstimatedTokens: 0,
+        generateRoster: true,
         sectionOverrides: {},
     },
     {
@@ -380,6 +382,7 @@ const DEFAULT_PROFILES = [
         conflictPolicy: 'ask',
         responseLength: 1000,
         maxEstimatedTokens: 0,
+        generateRoster: true,
         sectionOverrides: {},
     },
     {
@@ -404,6 +407,7 @@ const DEFAULT_PROFILES = [
         conflictPolicy: 'ask',
         responseLength: 1200,
         maxEstimatedTokens: 0,
+        generateRoster: true,
         sectionOverrides: {},
     },
 ];

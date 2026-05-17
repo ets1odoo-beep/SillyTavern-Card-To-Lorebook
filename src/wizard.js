@@ -18,7 +18,7 @@ import { getCardByIndex, getEmbeddedBookEntries, hasExtractableContent, buildCar
 import { listProfiles, getProfile, getSelectedProfile, setSelectedProfile, settings } from './profiles.js';
 import { listAiConnectionProfiles } from './conversionEngine.js';
 import { convertOneCard } from './conversionEngine.js';
-import { listAllWorlds, commitEntries, makeCardStamp, makeEmbeddedStamp, makeEntityStamp, openWorldInfoEditor, removeStampedEntries } from './lorebookIO.js';
+import { listAllWorlds, commitEntries, makeCardStamp, makeEmbeddedStamp, makeEntityStamp, openWorldInfoEditor, rebuildRoster, removeStampedEntries } from './lorebookIO.js';
 import { defaultLorebookName, estimateTokens, log, warn, err } from './core.js';
 
 const STEPS = ['source', 'profile', 'dest', 'preflight', 'progress', 'preview', 'done'];
@@ -931,6 +931,27 @@ export async function openWizard(selectedIds) {
                             }
                         }
                         commitResult = await commitEntries(state.destination, entries, state.conflictPolicy);
+
+                        // Auto-rebuild the roster entry (constant=true table-of-
+                        // contents that lists every card2lore-stamped entity so
+                        // the AI knows what's in the world) when profile opts in
+                        // and destination is a global lorebook (not character book).
+                        const profile = getProfile(state.profileId);
+                        if (profile?.generateRoster !== false
+                            && (state.destination.mode === 'new'
+                                || state.destination.mode === 'existing'
+                                || state.destination.mode === 'chat')) {
+                            try {
+                                const bookName = String(commitResult.target || '').replace(/\s*\(bound to chat\)$/, '').trim();
+                                if (bookName) {
+                                    const rosterResult = await rebuildRoster(bookName);
+                                    if (rosterResult.wrote) {
+                                        log(`Roster updated for "${bookName}" (covers ${rosterResult.entryCount} entries).`);
+                                    }
+                                }
+                            } catch (e) { warn('rebuildRoster failed', e); }
+                        }
+
                         state.currentStep = 'done';
                         refresh();
                         toastr.success(`Wrote ${commitResult.written} entries to ${commitResult.target}.`, 'Card to Lorebook');

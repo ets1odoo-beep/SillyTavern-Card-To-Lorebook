@@ -7,6 +7,7 @@ import { extension_settings } from '/scripts/extensions.js';
 export const EXT_KEY = 'SillyTavern-Card-To-Lorebook';
 export const ENTRY_STAMP_CARD = 'card2lore:card';
 export const ENTRY_STAMP_EMBEDDED = 'card2lore:embedded';
+export const ENTRY_STAMP_ROSTER = 'card2lore:roster';
 
 // Console-friendly logger. Silent unless debug toggled on in settings.
 export function log(...args) {

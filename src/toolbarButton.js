@@ -1,7 +1,9 @@
 /**
  * Injects the bulk-action button into ST's #rm_print_characters_pagination
- * toolbar. Hooks ST's BulkEditOverlay to read selectedCharacters.
+ * toolbar. Reads selectedCharacters from ST's exported singleton.
  */
+
+import { characterGroupOverlay } from '/script.js';
 
 import { openWizard } from './wizard.js';
 import { log, warn } from './core.js';
@@ -9,23 +11,53 @@ import { log, warn } from './core.js';
 const BUTTON_ID = 'cardToLoreButton';
 
 /**
- * Find the global ST bulk-edit overlay instance. It's not exported as a
- * module, but ST sets a couple of well-known names on window.
+ * Resolve the ST bulk-edit overlay. Tries imported singleton first (the
+ * authoritative path — `characterGroupOverlay` is exported from /script.js
+ * as `new BulkEditOverlay()`). Falls back to `window` for older builds and
+ * to the visual selection on the DOM as a last resort.
  */
-function getBulkOverlay() {
-    // BulkEditOverlay.js attaches the instance to window.characterGroupOverlay
-    // when the character panel initializes.
-    return (
-        /** @type {any} */ (window).characterGroupOverlay ||
-        /** @type {any} */ (window).BulkEditOverlay?.instance ||
-        null
-    );
-}
-
 function getSelectedIds() {
-    const ov = getBulkOverlay();
-    const ids = ov?.selectedCharacters || ov?._selectedCharacters || [];
-    return Array.isArray(ids) ? [...ids] : [];
+    // 1) Primary: the imported singleton (set at /script.js line ~395).
+    if (characterGroupOverlay) {
+        const a = characterGroupOverlay.selectedCharacters;
+        if (Array.isArray(a) && a.length > 0) {
+            return [...a].map(Number).filter(Number.isFinite);
+        }
+        const b = characterGroupOverlay._selectedCharacters;
+        if (Array.isArray(b) && b.length > 0) {
+            return [...b].map(Number).filter(Number.isFinite);
+        }
+    }
+
+    // 2) Window fallback (older ST or theme overrides).
+    const win = /** @type {any} */ (window);
+    if (win.characterGroupOverlay?.selectedCharacters) {
+        const a = win.characterGroupOverlay.selectedCharacters;
+        if (Array.isArray(a) && a.length > 0) {
+            return [...a].map(Number).filter(Number.isFinite);
+        }
+    }
+
+    // 3) DOM fallback — scrape the visually-selected character entities.
+    // ST's bulk mode adds `.character_select_state` or similar classes to
+    // the selected character entities. Different builds use different class
+    // names, so try the common candidates.
+    const candidates = document.querySelectorAll(
+        '.character_select.bulk_select_checked, ' +
+        '.character_select[data-bulk-selected="true"], ' +
+        '.entity_block.bulk_select_checked',
+    );
+    if (candidates.length > 0) {
+        const ids = [];
+        candidates.forEach(el => {
+            const chid = el.getAttribute('chid') ?? el.getAttribute('data-chid');
+            const n = Number(chid);
+            if (Number.isFinite(n)) ids.push(n);
+        });
+        if (ids.length > 0) return ids;
+    }
+
+    return [];
 }
 
 function ensureButton() {

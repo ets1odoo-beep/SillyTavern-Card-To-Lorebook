@@ -8,7 +8,7 @@
  *      rebuilds the character pagination row (e.g. on import/delete/paging).
  */
 
-import { eventSource, event_types } from '/script.js';
+import { characterGroupOverlay, eventSource, event_types } from '/script.js';
 import { SlashCommandParser } from '/scripts/slash-commands/SlashCommandParser.js';
 import { SlashCommand } from '/scripts/slash-commands/SlashCommand.js';
 import { SlashCommandArgument, ARGUMENT_TYPE } from '/scripts/slash-commands/SlashCommandArgument.js';
@@ -17,16 +17,13 @@ import { installToolbarButton } from './src/toolbarButton.js';
 import { mountSettingsPanel } from './settings.js';
 import { settings, getProfile, listProfiles, setSelectedProfile } from './src/profiles.js';
 import { openWizard } from './src/wizard.js';
-import { removeStampedEntries } from './src/lorebookIO.js';
+import { rebuildRoster, removeStampedEntries } from './src/lorebookIO.js';
 import { log, warn, err, EXT_KEY } from './src/core.js';
 
-function getBulkOverlay() {
-    return /** @type {any} */ (window).characterGroupOverlay || null;
-}
-
 function getSelectedCharacterIdsFromOverlay() {
-    const ov = getBulkOverlay();
-    return Array.isArray(ov?.selectedCharacters) ? [...ov.selectedCharacters] : [];
+    const ov = characterGroupOverlay || /** @type {any} */ (window).characterGroupOverlay;
+    const ids = ov?.selectedCharacters;
+    return Array.isArray(ids) ? [...ids].map(Number).filter(Number.isFinite) : [];
 }
 
 function registerSlashCommand() {
@@ -98,6 +95,46 @@ function registerSlashCommand() {
         log('slash command /cards-to-lore-clean registered');
     } catch (e) {
         warn('cleanup slash command registration failed', e);
+    }
+
+    // /cards-to-lore-roster — manually rebuild the World Roster entry for a
+    // given lorebook. Run this any time after editing entries by hand to keep
+    // the always-on roster in sync.
+    try {
+        SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+            name: 'cards-to-lore-roster',
+            callback: async (args) => {
+                const book = String(args?.book || '').trim();
+                if (!book) {
+                    toastr.warning('Usage: /cards-to-lore-roster book=<lorebookName>', 'Card to Lorebook');
+                    return '';
+                }
+                try {
+                    const res = await rebuildRoster(book);
+                    if (res.wrote) {
+                        toastr.success(`Roster rebuilt for "${book}" (covers ${res.entryCount} entries).`, 'Card to Lorebook');
+                    } else {
+                        toastr.info(`No card2lore entries in "${book}" — roster cleared.`, 'Card to Lorebook');
+                    }
+                    return String(res.entryCount || 0);
+                } catch (e) {
+                    toastr.error(String(e?.message || e), 'Roster rebuild failed');
+                    return '';
+                }
+            },
+            namedArgumentList: [
+                SlashCommandArgument.fromProps({
+                    name: 'book',
+                    description: 'lorebook name (required)',
+                    typeList: [ARGUMENT_TYPE.STRING],
+                    isRequired: true,
+                }),
+            ],
+            helpString: 'Rebuild the always-active "World Roster" entry for the named lorebook so the AI sees a current table of contents of every card2lore entity in the book.',
+        }));
+        log('slash command /cards-to-lore-roster registered');
+    } catch (e) {
+        warn('roster slash command registration failed', e);
     }
 }
 
