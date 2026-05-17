@@ -14,7 +14,7 @@
 import { Popup, POPUP_TYPE, POPUP_RESULT } from '/scripts/popup.js';
 import { characters } from '/script.js';
 
-import { getCardByIndex, getEmbeddedBookEntries, hasExtractableContent, buildCardPromptText, preflightStats } from './cardExtractor.js';
+import { getCardByIndex, getEmbeddedBookEntries, hasExtractableContent, buildCardPromptText, preflightStats, ensureFullCard } from './cardExtractor.js';
 import { listProfiles, getProfile, getSelectedProfile, setSelectedProfile, settings } from './profiles.js';
 import { listAiConnectionProfiles, convertOneCard, reprocessEmbeddedBook, looksPoorlyKeyed } from './conversionEngine.js';
 import { listAllWorlds, commitEntries, loadBaseLorebookContext, makeCardStamp, makeEmbeddedStamp, makeEntityStamp, openWorldInfoEditor, rebuildRoster, removeStampedEntries } from './lorebookIO.js';
@@ -419,9 +419,10 @@ function attachStepHandlers(state, refresh) {
     if (!root) return;
 
     if (state.currentStep === 'profile') {
-        root.querySelector('#c2l-prof-select')?.addEventListener('change', (e) => {
+        root.querySelector('#c2l-prof-select')?.addEventListener('change', async (e) => {
             state.profileId = e.target.value;
             setSelectedProfile(state.profileId);
+            await hydrateWizardCards(state);
             refresh();
         });
         root.querySelector('#c2l-ai-select')?.addEventListener('change', (e) => {
@@ -600,10 +601,13 @@ async function runQueue(state, refresh) {
         while (true) {
             const i = claimNext();
             if (i < 0) return;
-            const { card } = state.cards[i];
+            let { card } = state.cards[i];
             state.queue[i].status = 'running';
             state.queue[i].t0 = Date.now();
             refresh();
+
+            card = await ensureFullCard(card, profile);
+            state.cards[i].card = card;
 
             if (!hasExtractableContent(card, profile)) {
                 state.queue[i].status = 'skipped';
@@ -779,12 +783,13 @@ async function buildPreviewRows(state) {
                 kind = `${o.entityTypeLabel || o.entityType}`;
                 cardName = o.entityName || 'Entity';
             } else if (o.fromOtherEntities && o.cardName) {
-                kind = `character · ${o.sectionLabel || o.section || ''}`.trim();
+                kind = `character - ${o.sectionLabel || o.section || ''}`.trim();
                 cardName = o.cardName;
             } else {
-                kind = o.section ? `character · ${o.sectionLabel || o.section}` : 'character';
+                kind = o.section ? `character - ${o.sectionLabel || o.section}` : 'character';
                 cardName = parentCard.name;
             }
+            if (o.qualityIssue) kind = `${kind} - review: ${o.qualityIssue}`;
             rows.push({
                 kind,
                 cardName,
@@ -797,8 +802,19 @@ async function buildPreviewRows(state) {
                 selective: e.selective !== false,
                 order: e.order,
                 position: e.position,
+                depth: e.depth,
                 probability: Number.isFinite(e.probability) ? e.probability : 100,
                 useProbability: !!e.useProbability,
+                selectiveLogic: e.selectiveLogic,
+                scanDepth: e.scanDepth,
+                matchWholeWords: e.matchWholeWords,
+                vectorized: e.vectorized,
+                excludeRecursion: e.excludeRecursion,
+                sticky: e.sticky,
+                cooldown: e.cooldown,
+                group: e.group,
+                groupWeight: e.groupWeight,
+                ignoreBudget: e.ignoreBudget,
                 _origin: e._origin,
                 dropped: false,
             });
@@ -821,7 +837,7 @@ async function buildPreviewRows(state) {
                         ? makeCardStamp(card.name, '', sectionLabel)
                         : makeCardStamp(card.name, profile.name);
                     rows.push({
-                        kind: `embedded → ${sectionLabel || 'card'}`,
+                        kind: `embedded -> ${sectionLabel || 'card'}`,
                         cardName: card.name,
                         comment: r.comment,
                         keys: r.keys || [],
@@ -831,8 +847,19 @@ async function buildPreviewRows(state) {
                         selective: r.selective !== false,
                         order: r.order,
                         position: r.position,
+                        depth: r.depth,
                         probability: r.probability ?? 100,
                         useProbability: !!r.useProbability,
+                        selectiveLogic: r.selectiveLogic,
+                        scanDepth: r.scanDepth,
+                        matchWholeWords: r.matchWholeWords,
+                        vectorized: r.vectorized,
+                        excludeRecursion: r.excludeRecursion,
+                        sticky: r.sticky,
+                        cooldown: r.cooldown,
+                        group: r.group,
+                        groupWeight: r.groupWeight,
+                        ignoreBudget: r.ignoreBudget,
                         _origin: r._origin,
                         dropped: false,
                     });
@@ -866,12 +893,22 @@ async function buildPreviewRows(state) {
     return rows;
 }
 
+async function hydrateWizardCards(state) {
+    const profile = getProfile(state.profileId);
+    for (let i = 0; i < state.cards.length; i++) {
+        const current = state.cards[i]?.card;
+        if (!current) continue;
+        state.cards[i].card = await ensureFullCard(current, profile);
+    }
+}
+
 /* ============================================================
  * Wizard entry point
  * ============================================================ */
 
 export async function openWizard(selectedIds) {
     const state = newWizardState(selectedIds);
+    await hydrateWizardCards(state);
     if (state.cards.length === 0) {
         toastr.warning('No usable cards selected.', 'Card to Lorebook');
         return;
@@ -1144,6 +1181,17 @@ function rowToInternalEntry(row) {
         position: Number.isFinite(row.position) ? row.position : 0,
         probability,
         useProbability: probability < 100,
+        selectiveLogic: Number.isFinite(row.selectiveLogic) ? row.selectiveLogic : null,
+        depth: Number.isFinite(row.depth) ? row.depth : null,
+        scanDepth: Number.isFinite(row.scanDepth) ? row.scanDepth : null,
+        matchWholeWords: typeof row.matchWholeWords === 'boolean' ? row.matchWholeWords : null,
+        vectorized: typeof row.vectorized === 'boolean' ? row.vectorized : false,
+        excludeRecursion: typeof row.excludeRecursion === 'boolean' ? row.excludeRecursion : false,
+        sticky: Number.isFinite(row.sticky) ? row.sticky : null,
+        cooldown: Number.isFinite(row.cooldown) ? row.cooldown : null,
+        group: row.group || '',
+        groupWeight: Number.isFinite(row.groupWeight) ? row.groupWeight : null,
+        ignoreBudget: !!row.ignoreBudget,
         _origin: row._origin || null,
     };
 }

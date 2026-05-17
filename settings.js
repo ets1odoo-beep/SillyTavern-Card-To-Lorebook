@@ -18,6 +18,7 @@ import {
     CARD_FIELDS,
 } from './src/profiles.js';
 import { listAiConnectionProfiles, convertOneCard, SECTION_DEFAULTS, sectionDefaultsFor } from './src/conversionEngine.js';
+import { ensureFullCard } from './src/cardExtractor.js';
 import { log, EXT_KEY } from './src/core.js';
 
 // All known section names — built-ins plus any custom ones the user defined
@@ -266,7 +267,7 @@ function wireEvents() {
         if (!profile) return;
         saveProfile(profile);
         const idx = Number($('c2l-prof-test-char').value);
-        const card = characters[idx];
+        let card = characters[idx];
         if (!card) {
             toastr.warning('Pick a character first.', 'Card to Lorebook');
             return;
@@ -275,6 +276,7 @@ function wireEvents() {
         btn.disabled = true;
         btn.textContent = 'Testing…';
         try {
+            card = await ensureFullCard(card, profile);
             const entries = await convertOneCard(card, profile);
             await showTestResultPopup(card, profile, entries);
         } catch (e) {

@@ -7,7 +7,7 @@
 import { generateRaw } from '/script.js';
 import { SlashCommandParser } from '/scripts/slash-commands/SlashCommandParser.js';
 
-import { buildCardPromptText, detectImportance } from './cardExtractor.js';
+import { buildCardPromptText, detectImportance, hasSubstantivePromptText } from './cardExtractor.js';
 import { robustJsonParse, sanitizeContent, trimWords, log, warn } from './core.js';
 import { sanitizeKeyList, sanitizeSecondaryAgainstPrimary } from './keyHygiene.js';
 
@@ -308,6 +308,7 @@ export function sectionDefaultsFor(section, importance, profile = null) {
     const baseConstant = builtin.constantFor.includes(String(importance || '').toLowerCase());
 
     return {
+        ...builtin,
         order:          Number.isFinite(override.order)          ? override.order          : builtin.order,
         probability:    Number.isFinite(override.probability)    ? override.probability    : builtin.probability,
         constant:       typeof override.constant === 'boolean'   ? override.constant       : baseConstant,
@@ -343,6 +344,9 @@ export async function convertOneCard(card, profile, signal, baseContext = null) 
 
     const cardText = buildCardPromptText(card, profile);
     if (!cardText) throw new Error('No extractable content for card');
+    if (!hasSubstantivePromptText(cardText)) {
+        throw new Error('No substantive card fields loaded (only name/tags). Reload the full character card and retry.');
+    }
 
     const importanceHint = detectImportance(card);
     const { systemPrompt, userPrompt } = buildPrompt(profile, cardText, importanceHint, baseContext);
@@ -363,36 +367,64 @@ export async function convertOneCard(card, profile, signal, baseContext = null) 
         }
     }
 
-    let reply = '';
     try {
         if (signal?.aborted) throw new DOMException('Conversion cancelled', 'AbortError');
-        reply = await generateRaw({
-            systemPrompt,
-            prompt: userPrompt,
-            responseLength: Number(profile.responseLength) || (modular ? 3500 : 1500),
-            jsonSchema: schema,
-        });
+        const run = async (retryNote = '') => {
+            const reply = await generateRaw({
+                systemPrompt,
+                prompt: retryNote ? `${userPrompt}\n\n${retryNote}` : userPrompt,
+                responseLength: Number(profile.responseLength) || (modular ? 3500 : 1500),
+                jsonSchema: schema,
+            });
+
+            let parsed;
+            try {
+                parsed = robustJsonParse(reply).data;
+            } catch (e) {
+                return {
+                    entries: [textFallbackEntry(card, reply, profile, 'json-parse-failed')],
+                    issue: 'json-parse-failed',
+                };
+            }
+
+            if (!modular) return { entries: [parsedToEntry(card, parsed, profile)], issue: '' };
+
+            const entries = parsedToModularEntries(card, parsed, profile);
+            return { entries, issue: validateModularResult(entries, card) };
+        };
+
+        let result = await run();
+        if (signal?.aborted) throw new DOMException('Conversion cancelled', 'AbortError');
+
+        if (modular && result.issue) {
+            warn(`Modular conversion for "${card.name}" failed validation (${result.issue}); retrying once`);
+            const retryNote = [
+                'RETRY REQUIRED:',
+                `Your previous output failed validation: ${result.issue}.`,
+                'Return strict JSON in the requested World Kit shape.',
+                'The primaryCharacter.entries array MUST include at least anchor, appearance, and personality.',
+                'Use only substantive source text from the card. Do not invent details from name/tags alone.',
+            ].join('\n');
+            result = await run(retryNote);
+        }
+
+        if (modular && result.issue) {
+            warn(`Modular conversion for "${card.name}" is still weak after retry (${result.issue}); showing flagged preview output`);
+            result.entries.forEach(e => {
+                e._origin = {
+                    ...(e._origin || {}),
+                    qualityIssue: result.issue,
+                    source: e._origin?.source || 'card-weak-modular',
+                };
+            });
+        }
+
+        return result.entries;
     } finally {
         if (previousProfile) {
             await switchAiProfile(previousProfile);
         }
     }
-
-    if (signal?.aborted) throw new DOMException('Conversion cancelled', 'AbortError');
-
-    // Parse + dispatch on mode.
-    let parsed;
-    try {
-        parsed = robustJsonParse(reply).data;
-    } catch (e) {
-        warn('JSON parse failed for', card.name, '— falling back to flat text mode');
-        return [textFallbackEntry(card, reply, profile)];
-    }
-
-    if (modular) {
-        return parsedToModularEntries(card, parsed, profile);
-    }
-    return [parsedToEntry(card, parsed, profile)];
 }
 
 function parsedToEntry(card, parsed, profile) {
@@ -485,7 +517,7 @@ function parsedToModularEntries(card, parsed, profile) {
 
     if (all.length === 0) {
         warn('World Kit response produced no entries — synthesizing minimum anchor from card metadata');
-        return [synthesizeMinimumAnchor(card, profile)];
+        return [synthesizeMinimumAnchor(card, profile, 'empty-world-kit')];
     }
     return all;
 }
@@ -496,7 +528,7 @@ function parsedToModularEntries(card, parsed, profile) {
  * synthesize a real anchor entry from whatever raw card text we can pull —
  * description, personality, scenario. Beats showing the user blank content.
  */
-function synthesizeMinimumAnchor(card, profile) {
+function synthesizeMinimumAnchor(card, profile, reason = 'synthetic-anchor') {
     const cardName = String(card?.name || 'Unknown').trim();
     const bits = [
         card?.description,
@@ -509,7 +541,10 @@ function synthesizeMinimumAnchor(card, profile) {
     const content = bits.length
         ? bits.join('\n\n').slice(0, 1200)
         : `${cardName} — character details not extracted by AI; raw card had no usable text either.`;
-    return parsedToEntry(card, { name: cardName, keys: [cardName], content }, profile);
+    const entry = parsedToEntry(card, { name: cardName, keys: [cardName], content }, profile);
+    entry._origin.source = 'card-synthetic';
+    entry._origin.qualityIssue = reason;
+    return entry;
 }
 
 /**
@@ -529,7 +564,7 @@ function parseOneCharacter(card, parsed, profile) {
         if (parsed?.content && String(parsed.content).trim()) {
             return [parsedToEntry(card, { name: cardName, keys: [cardName], content: parsed.content }, profile)];
         }
-        return [synthesizeMinimumAnchor(card, profile)];
+        return [synthesizeMinimumAnchor(card, profile, 'character-had-no-entries')];
     }
 
     // Collect every name-form for this card (canonical + AI-supplied nicknames
@@ -574,7 +609,7 @@ function parseOneCharacter(card, parsed, profile) {
             // Card name + nicknames go into secondaryKeys (AND-gated via
             // selectiveLogic = AND_ALL below).
             keys = sanitizeKeyList(
-                Array.isArray(raw?.keys) ? raw.keys : [],
+                [...(Array.isArray(raw?.keys) ? raw.keys : []), ...nameKeyList.slice(0, 2)],
                 { maxKeys: 8 },
             );
             // AI may have also dropped name into secondaryKeys — merge with
@@ -583,7 +618,9 @@ function parseOneCharacter(card, parsed, profile) {
                 ...nameKeyList,
                 ...(Array.isArray(raw?.secondaryKeys) ? raw.secondaryKeys : []),
             ];
-            secondaryKeys = sanitizeSecondaryAgainstPrimary(keys, merged, 6);
+            secondaryKeys = keys.some(k => nameForms.has(String(k || '').toLowerCase()))
+                ? []
+                : sanitizeSecondaryAgainstPrimary(keys, merged, 6);
             // Safety: if AI gave us zero meaningful primary keys, fall back to
             // anchor-style triggering so the entry isn't dead weight.
             if (keys.length === 0) {
@@ -663,7 +700,48 @@ function parseOneCharacter(card, parsed, profile) {
     return out;
 }
 
-function textFallbackEntry(card, rawText, profile) {
+function validateModularResult(entries, card) {
+    if (!Array.isArray(entries) || entries.length === 0) return 'no-entries';
+    const cardName = String(card?.name || '').toLowerCase();
+    const placeholderPhrases = [
+        'not established',
+        'not detailed',
+        'not specified',
+        'unspecified',
+        'unknown',
+        'indeterminate',
+        'may develop',
+        'through roleplay',
+        'available material',
+    ];
+    const primarySections = new Set(entries
+        .filter(e => {
+            const origin = e?._origin || {};
+            if (origin.source !== 'card') return false;
+            if (origin.fromOtherEntities) return false;
+            return !cardName || String(origin.cardName || '').toLowerCase() === cardName;
+        })
+        .map(e => String(e?._origin?.section || '').toLowerCase())
+        .filter(Boolean));
+
+    for (const required of ['anchor', 'appearance', 'personality']) {
+        if (!primarySections.has(required)) return `missing-${required}`;
+        const entry = entries.find(e => {
+            const origin = e?._origin || {};
+            return origin.source === 'card'
+                && !origin.fromOtherEntities
+                && String(origin.section || '').toLowerCase() === required;
+        });
+        const content = String(entry?.content || '').toLowerCase();
+        if (placeholderPhrases.some(phrase => content.includes(phrase))) {
+            return `placeholder-${required}`;
+        }
+    }
+    if (entries.length < 3) return 'too-few-entries';
+    return '';
+}
+
+function textFallbackEntry(card, rawText, profile, reason = 'fallback') {
     const name = card?.name || 'Unknown';
     let content = sanitizeContent(String(rawText || ''));
     if (Number.isFinite(profile.wordCap)) content = trimWords(content, profile.wordCap);
@@ -681,6 +759,7 @@ function textFallbackEntry(card, rawText, profile) {
         selectiveLogic: SELECTIVE_LOGIC.AND_ANY,
         _origin: {
             source: 'card-fallback',
+            qualityIssue: reason,
             cardName: name,
             profileId: profile.id,
             profileName: profile.name,

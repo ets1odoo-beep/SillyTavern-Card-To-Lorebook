@@ -3,7 +3,7 @@
  * SillyTavern character object, respecting the profile's per-field toggles.
  */
 
-import { characters } from '/script.js';
+import { characters, getOneCharacter, getRequestHeaders } from '/script.js';
 
 import { CARD_FIELDS } from './profiles.js';
 import { estimateTokens, sanitizeContent, log } from './core.js';
@@ -12,6 +12,9 @@ import { sanitizeKeyList } from './keyHygiene.js';
 // Hard cap on embedded book entry content — some embedded entries are huge
 // and don't deserve full inclusion. ~4000 chars ≈ 1000 tokens.
 const EMBEDDED_CONTENT_CHAR_CAP = 4000;
+const FULL_FIELD_PROFILE = {
+    includeFields: Object.fromEntries(CARD_FIELDS.map(f => [f.key, true])),
+};
 
 /**
  * Get the character object for a given ST character index (the IDs in
@@ -21,6 +24,101 @@ export function getCardByIndex(idx) {
     const i = Number(idx);
     if (!Number.isFinite(i)) return null;
     return characters[i] ?? null;
+}
+
+/**
+ * Bulk character lists may contain shallow objects with only name/tags/avatar.
+ * Load the full card from SillyTavern before conversion if the current object
+ * has no substantive prompt fields.
+ */
+export async function ensureFullCard(card, profile) {
+    if (!card?.avatar || hasExtractableContent(card, profile)) return card;
+    try {
+        await getOneCharacter(card.avatar);
+        const loaded = characters.find(c => c?.avatar === card.avatar);
+        if (hasExtractableContent(loaded, profile) || hasExtractableContent(loaded, FULL_FIELD_PROFILE)) return loaded;
+
+        const response = await fetch('/api/characters/get', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: card.avatar }),
+        });
+        if (response.ok) {
+            const fetched = await response.json();
+            if (fetched && typeof fetched === 'object') {
+                fetched.avatar = fetched.avatar || card.avatar;
+                if (hasExtractableContent(fetched, profile) || hasExtractableContent(fetched, FULL_FIELD_PROFILE)) return fetched;
+            }
+        }
+        const fromPng = await fetchCardFromPng(card.avatar);
+        if (hasExtractableContent(fromPng, profile) || hasExtractableContent(fromPng, FULL_FIELD_PROFILE)) return fromPng;
+
+        return loaded || card;
+    } catch (e) {
+        console.warn('[Card2Lore] Failed to load full character card for', card?.name || card?.avatar, e);
+        return card;
+    }
+}
+
+async function fetchCardFromPng(avatar) {
+    if (!avatar) return null;
+    const response = await fetch(`/characters/${encodeURIComponent(avatar)}`, { cache: 'reload' });
+    if (!response.ok) return null;
+
+    const buffer = await response.arrayBuffer();
+    const chunks = extractPngTextChunks(new Uint8Array(buffer));
+    const encoded = chunks.ccv3 || chunks.chara;
+    if (!encoded) return null;
+
+    const json = JSON.parse(decodeBase64Utf8(encoded));
+    const data = json?.data && typeof json.data === 'object' ? json.data : {};
+    return {
+        ...json,
+        ...data,
+        data,
+        name: data.name || json.name,
+        avatar,
+    };
+}
+
+function extractPngTextChunks(bytes) {
+    const out = {};
+    const decoder = new TextDecoder('utf-8');
+    let offset = 8; // PNG signature
+    while (offset + 12 <= bytes.length) {
+        const len = readUint32BE(bytes, offset);
+        const type = decoder.decode(bytes.slice(offset + 4, offset + 8));
+        const start = offset + 8;
+        const end = start + len;
+        if (end > bytes.length) break;
+
+        if (type === 'tEXt') {
+            const data = bytes.slice(start, end);
+            const zero = data.indexOf(0);
+            if (zero >= 0) {
+                const key = decoder.decode(data.slice(0, zero));
+                const value = decoder.decode(data.slice(zero + 1));
+                out[key] = value;
+            }
+        }
+
+        offset = end + 4; // CRC
+    }
+    return out;
+}
+
+function readUint32BE(bytes, offset) {
+    return ((bytes[offset] << 24) >>> 0)
+        + (bytes[offset + 1] << 16)
+        + (bytes[offset + 2] << 8)
+        + bytes[offset + 3];
+}
+
+function decodeBase64Utf8(encoded) {
+    const binary = atob(String(encoded || '').trim());
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new TextDecoder('utf-8').decode(bytes);
 }
 
 /**
@@ -106,6 +204,23 @@ export function buildCardPromptText(card, profile) {
     }
 
     return out;
+}
+
+export function hasSubstantivePromptText(cardText) {
+    const text = String(cardText || '').replace(/\r\n/g, '\n');
+    const matches = [...text.matchAll(/^##\s+(.+?)\s*\n/gm)];
+    if (!matches.length) return text.trim().length > 0;
+
+    for (let i = 0; i < matches.length; i++) {
+        const label = String(matches[i][1] || '').trim().toLowerCase();
+        const start = matches[i].index + matches[i][0].length;
+        const end = i + 1 < matches.length ? matches[i + 1].index : text.length;
+        const body = text.slice(start, end).trim();
+        if (!body) continue;
+        if (label === 'card name' || label === 'tags') continue;
+        return true;
+    }
+    return false;
 }
 
 /**
@@ -213,7 +328,7 @@ export function preflightStats(cards, profile) {
     let nonEmpty = 0;
     for (const card of cards) {
         const text = buildCardPromptText(card, profile);
-        if (text) {
+        if (hasSubstantivePromptText(text)) {
             nonEmpty++;
             totalPromptChars += text.length;
         }
@@ -235,6 +350,7 @@ export function preflightStats(cards, profile) {
  */
 export function hasExtractableContent(card, profile) {
     const text = buildCardPromptText(card, profile);
-    // Even just the name isn't enough — need at least one substantive field.
-    return text.replace(/^## Card name\n[^\n]*$/m, '').trim().length > 0;
+    // Name + tags are metadata, not character substance. A tags-only card
+    // produces generic placeholder lore, so skip it instead.
+    return hasSubstantivePromptText(text);
 }
