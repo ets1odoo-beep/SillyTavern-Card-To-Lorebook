@@ -921,12 +921,21 @@ export function buildAdaptationAddendum(baseContext) {
         .map(e => `### ${e.name}\n${e.content}`).join('\n\n');
     const constants = (baseContext.constantEntries || [])
         .map(e => `### ${e.name}\n${e.content}`).join('\n\n');
+    const baseCardBlock = baseContext.baseCardText
+        ? [
+            `BASE WORLD CANONICAL CHARACTER — "${baseContext.baseCardName || 'Unknown'}":`,
+            `(This is the POV / main character of the base world. Use them as the anchor for tone, era, technology level, social norms, and speech register. The card being adapted likely orbits them.)`,
+            baseContext.baseCardText,
+            ``,
+        ].join('\n')
+        : '';
 
     const parts = [
         `ADAPTATION MODE — you are adapting this card to fit an EXISTING WORLD.`,
         ``,
         `BASE WORLD: "${baseContext.worldName}"`,
         ``,
+        baseCardBlock,
         `BASE WORLD ROSTER (what's already in this world):`,
         roster || '(none)',
         ``,

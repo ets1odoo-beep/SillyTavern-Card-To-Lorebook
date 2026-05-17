@@ -55,8 +55,9 @@ function newWizardState(selectedIds) {
         },
         conflictPolicy: 'ask',
         wipeBeforeCommit: false,     // P1.12 redo-from-scratch toggle
-        adaptationSource: '',        // Phase I — base lorebook for adaptation (empty = no adaptation)
-        baseContextByCardName: {},   // cached base-world context per card (loaded lazily)
+        adaptationSource: '',          // Phase I — base lorebook for adaptation (empty = no adaptation)
+        adaptationBaseCardAvatar: '',  // optional canonical character card of the base world (richer context than lorebook alone)
+        baseContextByCardName: {},     // cached base-world context per card (loaded lazily)
         embeddedMode: 'auto',        // Phase D — verbatim | reprocess | auto
         queue: [],                   // [{ cardIdx, status, error, entries, t0, t1 }]
         embedded: [],                // [{ cardName, entries: [internalEntry, ...] }]
@@ -221,6 +222,12 @@ function renderStepDest(state) {
                 <select id="c2l-adapt-source" class="text_pole">
                     <option value="">None — convert cards as-is</option>
                     ${worlds.map(w => `<option value="${escapeHtml(w)}" ${state.adaptationSource === w ? 'selected' : ''}>${escapeHtml(w)}</option>`).join('')}
+                </select>
+            </label>
+            <label><span><b>Base character card (optional)</b> — the canonical character of the target world. Gives the AI full appearance/personality/voice/scenario context for the world's POV character, on top of the lorebook entries.</span>
+                <select id="c2l-adapt-base-card" class="text_pole">
+                    <option value="">None — use lorebook context only</option>
+                    ${characters.map(c => `<option value="${escapeHtml(c.avatar)}" ${state.adaptationBaseCardAvatar === c.avatar ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
                 </select>
             </label>
         </div>
@@ -461,6 +468,10 @@ function attachStepHandlers(state, refresh) {
             state.adaptationSource = e.target.value || '';
             state.baseContextByCardName = {}; // bust cache when source changes
         });
+        root.querySelector('#c2l-adapt-base-card')?.addEventListener('change', (e) => {
+            state.adaptationBaseCardAvatar = e.target.value || '';
+            state.baseContextByCardName = {}; // bust cache when base card changes
+        });
         root.querySelector('#c2l-embedded-mode')?.addEventListener('change', (e) => {
             state.embeddedMode = e.target.value;
         });
@@ -605,17 +616,30 @@ async function runQueue(state, refresh) {
 
             try {
                 // Phase I — load base-world context if adaptation is enabled.
+                // Either a source lorebook OR a base card (or both) triggers adaptation mode.
                 let baseContext = null;
-                if (state.adaptationSource) {
+                if (state.adaptationSource || state.adaptationBaseCardAvatar) {
                     if (state.baseContextByCardName[card.name]) {
                         baseContext = state.baseContextByCardName[card.name];
                     } else {
                         try {
+                            const baseCard = state.adaptationBaseCardAvatar
+                                ? characters.find(c => c.avatar === state.adaptationBaseCardAvatar)
+                                : null;
+                            const baseCardText = baseCard
+                                ? buildCardPromptText(baseCard, profile)
+                                : '';
                             baseContext = await loadBaseLorebookContext(
                                 state.adaptationSource,
                                 buildCardPromptText(card, profile),
                                 { maxRelevantEntries: 8, maxConstantEntries: 6 },
-                            );
+                            ) || { worldName: '', roster: '', constantEntries: [], relevantEntries: [] };
+                            if (baseCard) {
+                                baseContext.baseCardName = baseCard.name;
+                                baseContext.baseCardText = baseCardText;
+                                // Make adaptation mode trigger even with no lorebook selected.
+                                if (!baseContext.worldName) baseContext.worldName = `${baseCard.name}'s world`;
+                            }
                             state.baseContextByCardName[card.name] = baseContext;
                         } catch (e) { warn('loadBaseLorebookContext failed', e); }
                     }
