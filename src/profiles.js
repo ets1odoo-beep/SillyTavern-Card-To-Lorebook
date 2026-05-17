@@ -198,16 +198,22 @@ EXTRACTION RULES — STRICT
 OMISSION & INFERENCE POLICY — read carefully
 ================================================================================
 
-OMISSION RULE (hard): if a section or entity would only contain placeholder / disclaimer text — "not specified", "unknown", "to be defined", "not yet established", "not stated in the card", "details unclear", or any similar meta-comment — DO NOT emit it. Drop the section entirely. Empty / disclaimer entries are pure token waste at runtime and pollute retrieval. An omitted section is ALWAYS better than a section that admits it has nothing to say.
+ANCHOR IS ALWAYS REQUIRED — never omit:
+The primaryCharacter's anchor entry MUST be emitted for every card. The anchor is the identity record — name + species + gender + role + one identifier. Even a one-line card ("Zoey, a friendly girl") has enough to write an anchor. If details are minimal, infer species (human if unspecified), age (adult if unspecified), and one role/identifier from the card's name and any context. NEVER drop the anchor. NEVER return primaryCharacter with an empty entries array.
 
-This applies to every section AND every otherEntity. If you wouldn't trust the entry to fire usefully mid-roleplay, don't emit it.
+OMISSION RULE (for non-anchor sections): if a NON-ANCHOR section (appearance / personality / voice / background / relationships / quirks) would only contain placeholder / disclaimer text — "not specified", "unknown", "to be defined", "not yet established", "not stated in the card", "details unclear", or any similar meta-comment — DO NOT emit that section. Drop it. Empty / disclaimer entries waste runtime tokens and pollute retrieval. An omitted non-anchor section is always better than one that admits it has nothing to say.
 
-INFERENCE POLICY for the primary character's anchor / appearance / personality / voice:
+This applies to non-anchor character sections AND every otherEntity. If you wouldn't trust the entry to fire usefully mid-roleplay, don't emit it. But the anchor is exempt — always emit it.
+
+INFERENCE POLICY for anchor / appearance / personality / voice:
 - These four sections define the character's basic identity. Cards almost always provide enough to write substantive content even when details aren't itemised.
-- If the card lacks an explicit appearance section but mentions species, role, setting, or shows the character in scenarios/dialogue, INFER a plausible appearance from those signals — name connotation, genre, tags, scenario, persona descriptions, example messages. Make confident creative choices grounded in the card's vibe (medieval/sci-fi/modern/etc).
+- If the card lacks an explicit appearance section but mentions species, role, setting, or shows the character in scenarios/dialogue, INFER a plausible appearance from those signals — name connotation, genre, tags, scenario, persona descriptions, example messages. Make confident creative choices grounded in the card's vibe (medieval / sci-fi / modern / etc).
 - Same for personality and voice — if the card shows behaviour through scenarios and dialogue, write the trait/voice section from those observations rather than admitting "not stated".
-- DO NOT write meta-disclaimers like "appearance not established", "personality to be defined through play", "voice details unclear". Those defeat the purpose of a lorebook entry. Either write substantive inferred content or invoke the OMISSION RULE and drop the section.
+- For very sparse cards: a one-line description + name is still enough to write anchor + appearance + personality. Lean on inference. Better a confident inferred 2-3 sentence section than nothing.
+- DO NOT write meta-disclaimers like "appearance not established", "personality to be defined through play", "voice details unclear". Either write substantive inferred content or (for non-anchor sections) invoke the OMISSION RULE and drop the section.
 - For OTHER entities (locations, items, factions, etc.): be stricter — only emit when the card actually mentions the entity. Don't invent locations / factions / quests the card never references.
+
+MINIMUM OUTPUT FOR EVERY CARD: at least primaryCharacter with at least anchor + appearance + personality entries. Anything less is a failure — the AI MUST produce these three even from a one-line card.
 
 ================================================================================
 CONTENT CONSTRAINTS

@@ -469,10 +469,32 @@ function parsedToModularEntries(card, parsed, profile) {
     }
 
     if (all.length === 0) {
-        warn('World Kit response produced no entries — falling back to one-entry parse');
-        return [parsedToEntry(card, { name: card?.name, keys: [card?.name], content: '' }, profile)];
+        warn('World Kit response produced no entries — synthesizing minimum anchor from card metadata');
+        return [synthesizeMinimumAnchor(card, profile)];
     }
     return all;
+}
+
+/**
+ * Last-resort safety net: AI returned valid JSON but no entries (or all
+ * entries were unparseable). Instead of committing an empty placeholder,
+ * synthesize a real anchor entry from whatever raw card text we can pull —
+ * description, personality, scenario. Beats showing the user blank content.
+ */
+function synthesizeMinimumAnchor(card, profile) {
+    const cardName = String(card?.name || 'Unknown').trim();
+    const bits = [
+        card?.description,
+        card?.data?.description,
+        card?.personality,
+        card?.data?.personality,
+        card?.scenario,
+        card?.data?.scenario,
+    ].map(s => String(s || '').trim()).filter(Boolean);
+    const content = bits.length
+        ? bits.join('\n\n').slice(0, 1200)
+        : `${cardName} — character details not extracted by AI; raw card had no usable text either.`;
+    return parsedToEntry(card, { name: cardName, keys: [cardName], content }, profile);
 }
 
 /**
@@ -486,8 +508,13 @@ function parseOneCharacter(card, parsed, profile) {
     const rawEntries = Array.isArray(parsed?.entries) ? parsed.entries : [];
 
     if (rawEntries.length === 0) {
-        warn(`Character "${cardName}" had no entries — falling back to one-entry parse`);
-        return [parsedToEntry(card, { name: cardName, keys: [cardName], content: parsed?.content || '' }, profile)];
+        warn(`Character "${cardName}" had no entries — synthesizing minimum anchor from card metadata`);
+        // If the AI gave us inline content on the character object, use that;
+        // otherwise pull from raw card metadata so we never commit a blank entry.
+        if (parsed?.content && String(parsed.content).trim()) {
+            return [parsedToEntry(card, { name: cardName, keys: [cardName], content: parsed.content }, profile)];
+        }
+        return [synthesizeMinimumAnchor(card, profile)];
     }
 
     // Collect every name-form for this card (canonical + AI-supplied nicknames
