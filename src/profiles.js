@@ -40,163 +40,117 @@ function fieldDefaults(overrides = {}) {
  * use the token budget efficiently during long chats: each beat
  * only triggers the sub-entries it actually needs.
  * ============================================================ */
-const MODULAR_BASE_INSTRUCTION = `You convert a SillyTavern character card into a complete MODULAR WORLD KIT for the World Info engine. A card is centred on one character but typically MENTIONS many entities — other named characters, locations, items, factions, quests, world concepts. We extract them ALL into separately-keyed lorebook entries so each one fires only when the chat mentions it. This is dramatically more token-efficient than dumping the whole card every turn.
+const MODULAR_BASE_INSTRUCTION = `You convert a SillyTavern character card into a complete MODULAR WORLD KIT for the World Info engine. A card describes an entire world through one character's lens. We extract EVERY meaningful entity — characters, places, items, factions, quests, events, documents, world rules, languages/cultures, abilities, ranks, recurring scenes — and emit each as its own keyed lorebook entry so each one fires only when the chat mentions it.
 
-THE KEY INSIGHT: the WI engine fires entries based on which keywords appear in recent chat. So:
-- Each character's ANCHOR fires on their name.
-- Each character's other sections (appearance, voice, etc.) fire on SECTION-SPECIFIC CUE WORDS as primary keys, with that character's name as a SECONDARY key (AND-gated). They only inject when both a cue word AND the character is in scene.
-- Non-character entities (locations / items / factions / quests / concepts) fire on their own name + a few related terms as primary keys.
+WHY: the WI engine fires entries based on keywords. If everything is in one big blob, it always fires. With proper modular split + AND-gated secondary keys, each piece injects only when its specific cue word AND the entity-in-scope appears. Massive token savings on long chats.
 
-OUTPUT FORMAT — return strict JSON only, no markdown fences, no commentary:
+OUTPUT — strict JSON only, no markdown fences:
 {
   "primaryCharacter": {
-    "name": "<the card's main character name verbatim>",
+    "name": "<verbatim>",
     "importance": "main|supporting|minor",
-    "entries": [
-      { "section": "anchor|appearance|personality|voice|background|relationships|quirks",
-        "keys": [...], "secondaryKeys": [...], "content": "..." },
-      ...
-    ]
+    "entries": [ { "section": "anchor|appearance|personality|voice|background|relationships|quirks|appearance_variant", "keys":[...], "secondaryKeys":[...], "content":"...", "variantName":"<only for appearance_variant>" }, ... ]
   },
   "otherEntities": [
-    { "type": "character", "name": "<other character name>", "importance": "supporting|minor",
-      "entries": [ { "section": "...", "keys": [...], "secondaryKeys": [...], "content": "..." }, ... ] },
-    { "type": "location", "name": "<place name>", "keys": [...], "content": "..." },
-    { "type": "item", "name": "<item name>", "keys": [...], "content": "..." },
-    { "type": "faction", "name": "<faction/group name>", "keys": [...], "content": "..." },
-    { "type": "quest", "name": "<quest/mission name>", "keys": [...], "content": "..." },
-    { "type": "concept", "name": "<world concept>", "keys": [...], "content": "..." }
+    { "type": "<see TYPE TABLE>", "name": "<entity name>", "keys":[...], "secondaryKeys":[...], "content":"...", "importance":"main|supporting|minor (only for type=character)", "entries":[...] /* only for type=character */, "linkedTo":["<entity name>", ...] /* optional cross-refs */ }
   ]
 }
 
-(Do not emit order/constant/probability/selectiveLogic — the extension fills those in from defaults. You only choose section/type, content, and keys.)
+(Do not emit order/constant/probability/selectiveLogic/group/sticky/cooldown — the extension fills those from the table below.)
+
+TYPE TABLE — pick the right type, emit ANY that exist in the card:
+
+| type                | what it covers                                                                | keys (primary)                              | secondary  |
+|---------------------|-------------------------------------------------------------------------------|---------------------------------------------|------------|
+| character           | a named person, NPC, antagonist, ally. Uses sectioned entries (see PART A).   | (per section)                               | (per sec.) |
+| location            | named place — kingdom / capital / city / village / building / room / region   | place name + landmarks + nearby places      | —          |
+| faction             | named group / organisation / church / guild / kingdom / company / religion    | faction name + member terms + symbols       | —          |
+| item                | named artifact / equipment / signature object / currency unit                 | item name + material + owner's name         | —          |
+| quest               | mission / objective / task / arc the card sets up                             | quest name + objective verbs + giver        | —          |
+| event               | historical event / war / coronation / cataclysm / festival / specific past date | event name + date/era + key participants  | —          |
+| document            | letter / journal / edict / prophecy / song / contract / known book            | doc title + key excerpt words               | —          |
+| rule                | in-fiction world rule / scenario constraint / law / custom (NOT OOC author meta) | rule terms                                | —          |
+| concept             | other world facts: magic systems, technologies, philosophies, calendars       | concept terms                               | —          |
+| language            | named language / dialect / writing system                                     | lang name + speakers                        | —          |
+| culture             | named culture / race-as-population / ethnic group                             | culture name + members                      | —          |
+| ability             | named spell / power / technique / skill, with named caster                    | ability name                                | caster name |
+| rank_title          | named rank / title / honorific (Lord / Archmage / Pope / Captain)             | rank word + holder names                    | —          |
+| scene               | recurring scene template / set piece (tavern visit, throne audience)           | scene cue words                             | —          |
+
+CHARACTER vs other types: characters get the 7-section split (PART A). All other types are ONE entry per entity with name + keys + content.
 
 ================================================================================
-PART A — PRIMARY CHARACTER (the card itself) — 7-section modular split
+PART A — character sections (used for primaryCharacter AND for type=character others)
 ================================================================================
 
-## anchor (REQUIRED) — 1-2 lines: name + species + GENDER (always state explicitly: "adult female", "young male", "elderly nonbinary humanoid" — never rely on pronouns alone) + role + 1 distinctive identifier ("magic warrior with red ponytail").
-   keys: card name + EVERY nickname / alias / title ("Arika", "Riri", "Princess Arika")
+anchor (required) — 1-2 lines: full name + species + GENDER (explicit: "adult female", "young male", never just pronouns) + role + 1 distinctive identifier.
+   keys: card name + every nickname/alias/title
    secondaryKeys: (none)
-   Goal: always-on identity glue when the character is in scene. Gender must be in the very first line.
 
-## appearance — physical visual VERBATIM. REQUIRED fields if present:
-   • GENDER (re-state — "adult female human", "male orc", etc.)
-   • Species + apparent age
-   • Height + build
-   • Hair: colour + length + style + texture + parting + bangs + how style sits (e.g. "tail draped over right shoulder")
-   • Eyes (colour + shape)
-   • Skin / fur / scales
-   • Body proportions VERBATIM (bust/dick/ass/waist/thighs — copy card's wording exactly)
-   • LIMB STATUS: "all four limbs intact" OR specify amputations / prosthetics / paralysis
-   • Marks (scars / tattoos / piercings / freckles / moles)
-   • Non-human features (tail / wings / horns / ears / fur / scales) VERBATIM
-   • Default outfit layer-by-layer with footwear (or "barefoot") and underwear visibility
-   keys: visual-cue words ONLY ("looks", "appears", "wearing", "wears", "outfit", "naked", "stripped", hair/body part words, clothing item types in card)
+appearance — physical VERBATIM. Required fields if present: GENDER restated, species + age, height + build, hair (colour/length/style/texture/parting/bangs), eyes (colour/shape), skin/fur/scales, body proportions VERBATIM (bust/dick/ass/waist/thighs), LIMB STATUS only if non-standard (amputation/prosthetic/paralysis), marks, non-human features, default outfit layer-by-layer + footwear + underwear visibility.
+   keys: visual cue words ONLY ("looks", "wearing", "outfit", "naked", hair/body words, clothing types from card)
    secondaryKeys: card name + nicknames
 
-## personality — traits, attitudes, motivations, fears, values, behaviour. Card's own wording.
-   keys: emotion/behaviour cues ("feels", "thinks", "angry", "embarrassed", "wants", "fears" + trait words from card)
+personality — traits, motivations, fears, values, behaviour. Card's own wording.
+   keys: emotion/behaviour cues + trait words from card
    secondaryKeys: card name + nicknames
 
-## voice — vocal quality, speech style, vocabulary, profanity, formality, signatures. Include 2-3 VERBATIM short example dialogue lines.
-   keys: dialogue cues ("says", "speaks", "voice", "asks", "whispers", "shouts", "mutters", "laughs")
+voice — vocal qualities, speech style, profanity, formality, signatures. Include 2-3 VERBATIM short example lines from mes_example if present.
+   keys: dialogue cues ("says", "speaks", "asks", "whispers", "shouts")
    secondaryKeys: card name + nicknames
 
-## background — backstory, origin, current circumstances.
-   keys: named places / factions / events specific to the character's history (from card text)
+background — backstory, origin, current circumstances.
+   keys: named places/factions/events specific to this character (from card text)
    secondaryKeys: card name + nicknames
 
-## relationships — connections to OTHER characters.
-   keys: EVERY OTHER character / group name mentioned (NOT this character's own name)
+relationships — connections to OTHER characters. ONE relationship per linked entity.
+   keys: EVERY OTHER character/group name mentioned (NOT this character's name)
    secondaryKeys: card name + nicknames
-   (selectiveLogic AND_ALL auto-applied — fires only when BOTH are in scene.)
+   (AND_ALL auto-applied; fires only when BOTH are in scene.)
 
-## quirks — habits, kinks, taboos, scenario-specific notes that don't fit above.
-   keys: the SPECIFIC quirk nouns/verbs from the card
+quirks — habits, kinks, taboos, scenario-specific notes (in-fiction; not OOC meta).
+   keys: specific quirk nouns/verbs from card
    secondaryKeys: card name + nicknames
 
-IMPORTANCE for primaryCharacter:
-- main: protagonist / POV-adjacent / "main character" / "{{user}}'s girlfriend/best friend/etc.". Anchor will be CONSTANT.
-- supporting: recurring named side character. Anchor selective on name.
-- minor: bit-part. Anchor selective on name with reduced probability.
+appearance_variant (optional, one per variant) — if card describes alternate outfits / forms / transformations ("battle armour", "cocktail dress", "naked", "monster form"). Use this when there's clearly more than one wardrobe/form, otherwise stick with the default appearance entry.
+   variantName: short label ("formal", "armour", "naked", "monster form")
+   keys: variant cue words ("armour", "armor", "battle", "formal", "dress", "naked", etc.)
+   secondaryKeys: card name + nicknames
+
+IMPORTANCE TIER for any character:
+- main: protagonist / POV-adjacent / "{{user}}'s girlfriend/best friend/etc". Anchor will be CONSTANT.
+- supporting: recurring named side character.
+- minor: bit-part / NPC mentioned in passing.
 
 ================================================================================
-PART B — OTHER ENTITIES (everything else in the card)
+PART B — non-character entities (one entry per entity)
 ================================================================================
 
-Extract ANY of these that the card mentions by name. Skip generic mentions ("a guard", "the forest"). Skip OOC / creator-meta / RP rules.
+For each non-character entity: pick TYPE from the table, supply name + keys + 2-4 sentences of VERBATIM content from the card.
 
-### type: "character" — OTHER named characters mentioned in the card with at least a sentence of description.
-   Use the same 7-section modular structure as primaryCharacter (with appropriate importance):
-     {
-       "type": "character",
-       "name": "ETSVin",
-       "importance": "main|supporting|minor",
-       "entries": [ { "section": "anchor", ... }, { "section": "appearance", ... }, ... ]
-     }
-   Apply the same key strategy — anchor uses name as primary, others use cue words.
-   For characters mentioned only briefly: emit only the anchor + 1-2 most relevant sections.
+For type=ability use secondaryKeys = caster name (so the ability fires only when its owner is in scene).
 
-### type: "location" — ANY named place (kingdom, capital, village, building, region, room).
-   {
-     "type": "location",
-     "name": "Royal Palace",
-     "keys": ["Royal Palace", "palace", "throne room", any landmarks named inside it],
-     "content": "<2-4 sentences: geography, architecture, atmosphere, who lives/works there, what happens there. VERBATIM facts from card.>"
-   }
-
-### type: "item" — ANY named item, artifact, equipment, currency, signature object.
-   {
-     "type": "item",
-     "name": "Excalibur",
-     "keys": ["Excalibur", "holy sword", material/colour terms, owner's name if explicit in card],
-     "content": "<2-3 sentences: physical form, origin/lore, properties, current owner or location.>"
-   }
-
-### type: "faction" — ANY named group, organisation, church, guild, kingdom, company, religion.
-   {
-     "type": "faction",
-     "name": "Vaaj Church",
-     "keys": ["Vaaj Church", "Vaaj", "priests of Vaaj", member terms, symbol/uniform terms in card],
-     "content": "<2-4 sentences: purpose, structure, allies/enemies, current state, key members named in card.>"
-   }
-
-### type: "quest" — ANY mission / task / objective the card sets up.
-   {
-     "type": "quest",
-     "name": "Defeat the Demon Lord",
-     "keys": ["Demon Lord", "quest", "mission", relevant verbs from objective],
-     "content": "<2-3 sentences: objective, stakes, who is involved, current progress / status.>"
-   }
-
-### type: "concept" — world-building info NOT covered above: magic systems, currencies, technologies, religions (the doctrine itself, not the church), cultures, ranks/titles, historical events, world rules ("polygamy for adventurers is legal").
-   {
-     "type": "concept",
-     "name": "Pinis Religion",
-     "keys": ["Pinis", "Pinis religion", "head priests of Pinis", terms specific to this concept],
-     "content": "<2-3 sentences explaining the concept and its relevance.>"
-   }
+For type=relationship-style entries between OTHER characters that aren't either-side's anchor, you can also emit a standalone entry of type=character with section=relationships listing both — but normally the character's own relationships section covers this.
 
 ================================================================================
 EXTRACTION RULES — STRICT
 ================================================================================
 
-- Be greedy on entity extraction: if a name appears with even a short description (one sentence), make it an entry. Better too many small entries than missing context.
-- Skip throwaway names ("a guard", "the merchant") — no usable description.
-- Skip OOC / creator preferences / "Bakunyuu Party NTR will not skip ahead in sex" type RP rules.
-- DEDUP: each named entity gets ONE entry (or one per-section for characters).
+- Be GREEDY: extract every named entity with at least a short description. Better too many small entries than missing context.
+- SKIP truly throwaway names ("a guard", "the merchant" with no usable description).
+- IN-FICTION vs OOC: scenario constraints like "polygamy is legal for adventurers" or "characters cannot leave the capital without permission" are WORLD RULES → emit as type=rule. Only skip pure RP-meta author preferences ("don't skip ahead in sex", "use vivid prose") that have no in-fiction grounding.
+- Name belongs ONLY in anchor's primary keys for characters. Non-anchor sections use cue words primary + name secondary.
+- For non-character entities, name IS the primary key (no AND-gating).
+- LINK entities via the optional "linkedTo" array on any entry. E.g. character "Marah" linkedTo=["Vaaj Church", "Vaaj Temple"]. Used to build the roster's cross-references.
+- DEDUP within this response: don't emit two entries for the same entity.
 - Use lowercase keys except for proper nouns and acronyms.
-- Avoid single-character, stopword, or punctuation-only keys.
-- For relationships sections AND non-character entities, do NOT include the primary character's name in the entity's primary keys — let the entity fire on its own merits.
+- Avoid stopword keys ("the", "a", "and", "is").
 
-CONTENT CONSTRAINTS
-- VERBATIM for distinct facts: colour words, body proportions, place names, item materials, faction names.
-- Hard caps per section:
-   character anchor 80w, voice 200w, personality 250w, appearance 350w, background 300w, relationships 200w, quirks 200w.
-   location 250w. item 150w. faction 200w. quest 200w. concept 200w.
-- Drop creator meta, OOC, [bracketed instructions], author asides.
-- Output ONLY the JSON object. No prose around it. No code fences.`;
+CONTENT CAPS (auto-enforced; AI just stay close):
+  character anchor 80w · voice 200w · personality 250w · appearance 350w · background 300w · relationships 200w · quirks 200w · appearance_variant 300w
+  location 250w · faction 200w · item 150w · quest 200w · event 250w · document 250w · rule 150w · concept 200w · language 150w · culture 200w · ability 150w · rank_title 100w · scene 250w
+
+Output ONLY the JSON object. No prose around it. No code fences.`;
 
 // The flat-extraction system prompt — one entry per card, single content blob.
 // Kept as an alternative mode for users who want one-row-per-card simplicity

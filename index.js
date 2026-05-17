@@ -18,6 +18,7 @@ import { mountSettingsPanel } from './settings.js';
 import { settings, getProfile, listProfiles, setSelectedProfile } from './src/profiles.js';
 import { openWizard } from './src/wizard.js';
 import { rebuildRoster, removeStampedEntries } from './src/lorebookIO.js';
+import { installRuntimeHooks } from './src/runtimeHooks.js';
 import { log, warn, err, EXT_KEY } from './src/core.js';
 
 function getSelectedCharacterIdsFromOverlay() {
@@ -155,6 +156,7 @@ function init() {
         }
         try {
             registerSlashCommand();
+            installRuntimeHooks();
         } catch (e) {
             warn('slash command install failed', e);
         }

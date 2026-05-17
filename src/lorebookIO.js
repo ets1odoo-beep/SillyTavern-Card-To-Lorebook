@@ -85,31 +85,60 @@ export async function ensureNewLorebook(name) {
  *     _origin?: { source, cardName, profileId?, createdAt? }
  *   }
  */
+function applyFieldsToEntry(target, entry) {
+    target.key = [...(entry.keys || [])].filter(Boolean);
+    target.keysecondary = [...(entry.secondaryKeys || [])].filter(Boolean);
+    // Inject content decorators (@@activate <name>) for cross-references the
+    // AI flagged so anchor entries cross-trigger related sections without
+    // keys needing to overlap.
+    const linkedTo = entry?._origin?.linkedTo;
+    if (Array.isArray(linkedTo) && linkedTo.length > 0) {
+        const decorators = linkedTo
+            .map(n => `@@activate ${String(n).trim()}`)
+            .filter(Boolean)
+            .join('\n');
+        target.content = decorators
+            ? `${decorators}\n${String(entry.content || '')}`
+            : String(entry.content || '');
+    } else {
+        target.content = String(entry.content || '');
+    }
+    target.comment = String(entry.comment || '');
+    target.constant = !!entry.constant;
+    target.selective = !!entry.selective;
+    if (Number.isFinite(entry.order))           target.order = entry.order;
+    if (Number.isFinite(entry.position))        target.position = entry.position;
+    if (Number.isFinite(entry.depth))           target.depth = entry.depth;
+    if (Number.isFinite(entry.probability))     target.probability = entry.probability;
+    if (typeof entry.useProbability === 'boolean') target.useProbability = entry.useProbability;
+    if (Number.isFinite(entry.selectiveLogic))  target.selectiveLogic = entry.selectiveLogic;
+    if (typeof entry.disable === 'boolean')     target.disable = entry.disable;
+    if (typeof entry.caseSensitive === 'boolean') target.caseSensitive = entry.caseSensitive;
+    if (typeof entry.matchWholeWords === 'boolean') target.matchWholeWords = entry.matchWholeWords;
+    // Phase B — extended WI field surface
+    if (Number.isFinite(entry.scanDepth))       target.scanDepth = entry.scanDepth;
+    if (typeof entry.vectorized === 'boolean')  target.vectorized = entry.vectorized;
+    if (typeof entry.excludeRecursion === 'boolean') target.excludeRecursion = entry.excludeRecursion;
+    if (typeof entry.preventRecursion === 'boolean') target.preventRecursion = entry.preventRecursion;
+    if (Number.isFinite(entry.delayUntilRecursion)) target.delayUntilRecursion = entry.delayUntilRecursion;
+    if (Number.isFinite(entry.sticky))          target.sticky = entry.sticky;
+    if (Number.isFinite(entry.cooldown))        target.cooldown = entry.cooldown;
+    if (Number.isFinite(entry.delay))           target.delay = entry.delay;
+    if (typeof entry.group === 'string' && entry.group) target.group = entry.group;
+    if (typeof entry.groupOverride === 'boolean') target.groupOverride = entry.groupOverride;
+    if (Number.isFinite(entry.groupWeight))     target.groupWeight = entry.groupWeight;
+    if (typeof entry.useGroupScoring === 'boolean') target.useGroupScoring = entry.useGroupScoring;
+    if (typeof entry.automationId === 'string' && entry.automationId) target.automationId = entry.automationId;
+    if (typeof entry.ignoreBudget === 'boolean') target.ignoreBudget = entry.ignoreBudget;
+    if (Array.isArray(entry.triggers))          target.triggers = [...entry.triggers];
+    if (entry._origin) target._c2lOrigin = entry._origin;
+    return target;
+}
+
 function addEntryToData(data, entry) {
     const created = createWorldInfoEntry(null, data);
     if (!created) throw new Error('createWorldInfoEntry returned null');
-    created.key = [...(entry.keys || [])].filter(Boolean);
-    created.keysecondary = [...(entry.secondaryKeys || [])].filter(Boolean);
-    created.content = String(entry.content || '');
-    created.comment = String(entry.comment || '');
-    created.constant = !!entry.constant;
-    created.selective = !!entry.selective;
-    if (Number.isFinite(entry.order))           created.order = entry.order;
-    if (Number.isFinite(entry.position))        created.position = entry.position;
-    if (Number.isFinite(entry.probability))     created.probability = entry.probability;
-    if (typeof entry.useProbability === 'boolean') created.useProbability = entry.useProbability;
-    if (Number.isFinite(entry.depth))           created.depth = entry.depth;
-    if (Number.isFinite(entry.selectiveLogic))  created.selectiveLogic = entry.selectiveLogic;
-    if (typeof entry.disable === 'boolean')     created.disable = entry.disable;
-    if (typeof entry.caseSensitive === 'boolean') created.caseSensitive = entry.caseSensitive;
-    if (typeof entry.matchWholeWords === 'boolean') created.matchWholeWords = entry.matchWholeWords;
-    if (entry._origin) {
-        // ST entries don't have a typed metadata slot; keep our origin info
-        // as a side-channel on the entry for in-memory reads (the comment
-        // stamp is the persisted identifier).
-        created._c2lOrigin = entry._origin;
-    }
-    return created;
+    return applyFieldsToEntry(created, entry);
 }
 
 /* ============================================================
@@ -197,7 +226,7 @@ function findCollidingEntry(data, fullStamp) {
  * For 'ask' policy, opens a per-entry popup.
  */
 async function resolveConflict(policy, cardName, existingEntry, newEntry) {
-    if (policy === 'skip' || policy === 'overwrite' || policy === 'append') return policy;
+    if (policy === 'skip' || policy === 'overwrite' || policy === 'append' || policy === 'merge') return policy;
     if (policy !== 'ask') return 'skip';
 
     const html = `
@@ -221,12 +250,13 @@ async function resolveConflict(policy, cardName, existingEntry, newEntry) {
         okButton: 'Overwrite',
         cancelButton: 'Skip',
         customButtons: [
+            { text: 'Merge (AI)', result: 'merge' },
             { text: 'Append as new', result: 'append' },
             { text: 'Skip', result: 'skip' },
             { text: 'Overwrite', result: 'overwrite' },
         ],
     }).show();
-    if (result === 'overwrite' || result === 'append' || result === 'skip') return result;
+    if (['merge', 'overwrite', 'append', 'skip'].includes(result)) return result;
     return 'skip';
 }
 
@@ -250,25 +280,30 @@ function escapeHtml(s) {
  * @param {string} conflictPolicy  'ask' | 'skip' | 'overwrite' | 'append'
  * @returns {Promise<{ written: number, skipped: number, overwritten: number, appended: number, target: string }>}
  */
-export async function commitEntries(destination, entries, conflictPolicy = 'ask') {
+export async function commitEntries(destination, entries, conflictPolicy = 'ask', opts = {}) {
     if (!Array.isArray(entries) || entries.length === 0) {
-        return { written: 0, skipped: 0, overwritten: 0, appended: 0, target: '' };
+        return { written: 0, skipped: 0, overwritten: 0, appended: 0, merged: 0, mergeCallsUsed: 0, target: '' };
     }
 
-    const result = { written: 0, skipped: 0, overwritten: 0, appended: 0, target: '' };
+    const result = {
+        written: 0, skipped: 0, overwritten: 0, appended: 0, merged: 0,
+        mergeCallsUsed: 0, target: '',
+    };
+    const mergeProfile = opts.mergeProfile || null;
+    const mergeCap = opts.mergeMaxAiCalls ?? 20;
 
     if (destination.mode === 'new') {
         if (!destination.name) throw new Error('New lorebook destination needs a name');
         await ensureNewLorebook(destination.name);
         result.target = destination.name;
-        await appendToWorld(destination.name, entries, 'append', result);
+        await appendToWorld(destination.name, entries, 'append', result, mergeProfile, mergeCap);
         return result;
     }
 
     if (destination.mode === 'existing') {
         if (!destination.name) throw new Error('Existing lorebook destination needs a name');
         result.target = destination.name;
-        await appendToWorld(destination.name, entries, conflictPolicy, result);
+        await appendToWorld(destination.name, entries, conflictPolicy, result, mergeProfile, mergeCap);
         return result;
     }
 
@@ -280,7 +315,7 @@ export async function commitEntries(destination, entries, conflictPolicy = 'ask'
             await ensureNewLorebook(bookName);
         }
         result.target = `${bookName} (bound to chat)`;
-        await appendToWorld(bookName, entries, conflictPolicy, result);
+        await appendToWorld(bookName, entries, conflictPolicy, result, mergeProfile, mergeCap);
         // Bind to chat
         chat_metadata[WI_METADATA_KEY] = bookName;
         try { await saveMetadata(); } catch (e) { warn('saveMetadata failed', e); }
@@ -357,7 +392,7 @@ function internalToV2BookEntry(entry, insertionOrder) {
  * Core append/update routine — for global lorebooks (modes 'new', 'existing',
  * 'chat'). Mutates the `result` object in place.
  */
-async function appendToWorld(worldName, entries, policy, result) {
+async function appendToWorld(worldName, entries, policy, result, mergeProfile = null, mergeCap = 20) {
     const data = await loadOrInit(worldName);
     let dirty = false;
 
@@ -382,20 +417,7 @@ async function appendToWorld(worldName, entries, policy, result) {
         }
         if (decision === 'overwrite') {
             // Replace in place, preserving the existing UID and ordering.
-            const old = data.entries[collision.uid];
-            old.key = [...(entry.keys || [])].filter(Boolean);
-            old.keysecondary = [...(entry.secondaryKeys || [])].filter(Boolean);
-            old.content = String(entry.content || '');
-            old.comment = String(entry.comment || '');
-            old.constant = !!entry.constant;
-            old.selective = !!entry.selective;
-            if (Number.isFinite(entry.order))           old.order = entry.order;
-            if (Number.isFinite(entry.position))        old.position = entry.position;
-            if (Number.isFinite(entry.probability))     old.probability = entry.probability;
-            if (typeof entry.useProbability === 'boolean') old.useProbability = entry.useProbability;
-            if (Number.isFinite(entry.depth))           old.depth = entry.depth;
-            if (Number.isFinite(entry.selectiveLogic))  old.selectiveLogic = entry.selectiveLogic;
-            old._c2lOrigin = entry._origin;
+            applyFieldsToEntry(data.entries[collision.uid], entry);
             result.overwritten++;
             result.written++;
             dirty = true;
@@ -408,6 +430,28 @@ async function appendToWorld(worldName, entries, policy, result) {
             result.appended++;
             result.written++;
             dirty = true;
+            continue;
+        }
+        if (decision === 'merge') {
+            // AI-merge: union the facts via a focused AI call, write back into
+            // the existing entry's slot. Honors profile.mergeMaxAiCalls cap.
+            if (result.mergeCallsUsed >= (mergeCap ?? 20)) {
+                warn('mergeMaxAiCalls cap reached — falling back to skip');
+                result.skipped++;
+                continue;
+            }
+            try {
+                const { mergeEntriesViaAI } = await import('./conversionEngine.js');
+                const merged = await mergeEntriesViaAI(collision.entry, entry, mergeProfile || {});
+                applyFieldsToEntry(data.entries[collision.uid], merged);
+                result.merged++;
+                result.written++;
+                result.mergeCallsUsed++;
+                dirty = true;
+            } catch (e) {
+                warn('AI merge failed — falling back to skip', e);
+                result.skipped++;
+            }
             continue;
         }
     }
@@ -459,90 +503,208 @@ export function makeRosterStamp() {
     return `[${ENTRY_STAMP_ROSTER}] World Roster`;
 }
 
+// Hard budget cap on roster content (chars). ~600 tokens worth.
+const ROSTER_CHAR_BUDGET = 2400;
+
 /**
- * Walk the lorebook's entries, group the card2lore-stamped ones by category,
- * and return a compact text roster suitable for a constant-true WI entry.
+ * Walk the lorebook's entries, group the card2lore-stamped ones by type, mine
+ * cross-references via _c2lOrigin.linkedTo, and synthesize a navigable
+ * cross-referenced index suitable for a constant-true always-on WI entry.
  *
- * Format (kept dense, ~1 line per entry, sectioned):
- *   ## ACTIVE WORLD ROSTER (auto-generated by Card to Lorebook)
- *   MAIN CHARACTERS: Arika · ETSVin · ...
- *   SUPPORTING: King Verros · Marah · ...
- *   LOCATIONS: Royal Palace · Vaaj Temple · ...
- *   FACTIONS: Vaaj Church · Pinis Religion
- *   ITEMS: Magic Staff
- *   QUESTS: Defeat the Demon Lord
- *   CONCEPTS: Polygamy for adventurers
+ * Output shape:
+ *   ## ACTIVE WORLD ROSTER (Card to Lorebook auto-generated — always loaded)
  *
- * Character anchors are mined to detect importance + a 1-line tag.
+ *   [MAIN CHARACTERS]
+ *   • Arika — adult female human, magic warrior
+ *     ↔ Vaaj Church · Royal Palace · Excalibur
+ *   • ETSVin — adult male human, hero
+ *
+ *   [SUPPORTING]
+ *   • King Verros — antagonist ruler  (↔ Royal Court · Royal Palace)
+ *
+ *   [LOCATIONS]
+ *   • Royal Palace — capital seat
+ *
+ *   [FACTIONS]
+ *   • Vaaj Church — state religion
+ *
+ *   [QUESTS — ACTIVE]
+ *   • Defeat the Demon Lord — main arc
+ *
+ *   [RULES / WORLD FACTS]
+ *   • Polygamy for adventurers is legal
+ *
+ *   ... etc
+ *
+ * Importance is derived from each character's anchor `_c2lOrigin.importance`
+ * (set by the conversion engine), not from the `constant` flag.
  */
 function buildRosterText(data) {
-    const groups = {
-        mainChars: [],     // { name, tag }
-        supportingChars: [],
-        minorChars: [],
-        locations: [],
-        items: [],
-        factions: [],
-        quests: [],
-        concepts: [],
+    // Collected per-type buckets.
+    const chars = {
+        main: [], supporting: [], minor: [],
+    };
+    const types = {
+        location: [], faction: [], item: [],
+        quest: [], event: [], document: [], rule: [],
+        concept: [], language: [], culture: [],
+        ability: [], rank_title: [], scene: [],
     };
 
-    // Track which char-name slots we've already counted (anchor only — every
-    // character has many sectioned entries but only one anchor).
-    const charSeen = new Set();
+    // Map characterName.toLowerCase() → { name, tag, importance, edges:Set }
+    // built up from all of that character's sub-entries.
+    const charMap = new Map();
+    const ensureChar = (name) => {
+        const k = name.toLowerCase();
+        if (!charMap.has(k)) charMap.set(k, { name, tag: '', importance: 'supporting', edges: new Set() });
+        return charMap.get(k);
+    };
 
     for (const [_uid, entry] of Object.entries(data?.entries || {})) {
         const comment = String(entry?.comment || '').trim();
         if (!comment.startsWith('[card2lore:')) continue;
-        // Don't include the roster entry itself or embedded passthrough entries
-        // (the AI already sees those via their own keys).
         if (comment.startsWith(`[${ENTRY_STAMP_ROSTER}]`)) continue;
+        // Embedded passthrough entries deliberately skipped (have their own keys).
 
-        // Parse stamp: "[card2lore:card:Anchor] Arika" or "[card2lore:location] Royal Palace" or "[card2lore:embedded] Arika — Foo".
-        const m = comment.match(/^\[card2lore:([a-z]+)(?::([^\]]+))?\]\s*(.+?)(?:\s+—\s+.*)?$/i);
+        const m = comment.match(/^\[card2lore:([a-z_]+)(?::([^\]]+))?\]\s*(.+?)(?:\s+—\s+.*)?$/i);
         if (!m) continue;
         const kind = m[1].toLowerCase();
         const subSection = (m[2] || '').toLowerCase();
         const name = m[3].trim();
         if (!name) continue;
+        const origin = entry._c2lOrigin || {};
+        const linkedTo = Array.isArray(origin.linkedTo) ? origin.linkedTo : [];
 
         if (kind === 'card') {
-            // Character sub-entry. We only want each character listed once,
-            // using their anchor as the "tag" line.
-            if (subSection !== 'anchor') continue;
-            if (charSeen.has(name.toLowerCase())) continue;
-            charSeen.add(name.toLowerCase());
-            // Importance — anchor's constant flag tells us; "main" → constant=true.
-            const isMain = !!entry.constant;
-            const tag = oneLineTag(entry.content, 60);
-            const item = { name, tag };
-            if (isMain) groups.mainChars.push(item);
-            else groups.supportingChars.push(item);
-        } else if (kind === 'location')  groups.locations.push({ name, tag: oneLineTag(entry.content, 40) });
-        else if (kind === 'item')        groups.items.push({ name, tag: oneLineTag(entry.content, 40) });
-        else if (kind === 'faction')     groups.factions.push({ name, tag: oneLineTag(entry.content, 40) });
-        else if (kind === 'quest')       groups.quests.push({ name, tag: oneLineTag(entry.content, 40) });
-        else if (kind === 'concept')     groups.concepts.push({ name, tag: oneLineTag(entry.content, 40) });
-        // 'embedded' deliberately skipped — those are card authors' own
-        // entries with their own keys; listing them here is redundant.
+            // Per-character info accumulated from all sub-entries.
+            const c = ensureChar(name);
+            if (subSection === 'anchor') {
+                c.tag = oneLineTag(entry.content, 70);
+                if (origin.importance) c.importance = origin.importance;
+            }
+            // Every sub-entry's linkedTo (especially relationships) contributes
+            // to the edges set.
+            linkedTo.forEach(t => c.edges.add(t));
+            continue;
+        }
+
+        const bucket = types[kind];
+        if (!bucket) continue; // unknown type, skip
+        // Single entry per non-character entity. Dedup by name.
+        if (bucket.some(b => b.name.toLowerCase() === name.toLowerCase())) continue;
+        bucket.push({
+            name,
+            tag: oneLineTag(entry.content, 60),
+            disabled: !!entry.disable,
+            edges: new Set(linkedTo),
+        });
     }
 
-    // Build the text. Each section is a single line with dot-separated entries
-    // (compact for constant-true budget). Tags shown inline in parens for
-    // characters; types without descriptions just list names.
-    const lines = ['## ACTIVE WORLD ROSTER (Card to Lorebook auto-generated — always loaded for AI awareness)'];
-    if (groups.mainChars.length)        lines.push('MAIN CHARACTERS: ' + groups.mainChars.map(c => c.tag ? `${c.name} (${c.tag})` : c.name).join(' · '));
-    if (groups.supportingChars.length)  lines.push('SUPPORTING / OTHER: ' + groups.supportingChars.map(c => c.tag ? `${c.name} (${c.tag})` : c.name).join(' · '));
-    if (groups.locations.length)        lines.push('LOCATIONS: ' + groups.locations.map(x => x.name).join(' · '));
-    if (groups.factions.length)         lines.push('FACTIONS: ' + groups.factions.map(x => x.name).join(' · '));
-    if (groups.items.length)            lines.push('ITEMS: ' + groups.items.map(x => x.name).join(' · '));
-    if (groups.quests.length)           lines.push('QUESTS: ' + groups.quests.map(x => x.tag ? `${x.name} (${x.tag})` : x.name).join(' · '));
-    if (groups.concepts.length)         lines.push('CONCEPTS / WORLD RULES: ' + groups.concepts.map(x => x.name).join(' · '));
+    // Split characters by importance.
+    for (const c of charMap.values()) {
+        chars[c.importance === 'main' ? 'main' : c.importance === 'minor' ? 'minor' : 'supporting'].push(c);
+    }
 
-    if (lines.length === 1) return ''; // nothing to roster
+    // Render functions.
+    const renderCharLine = (c) => {
+        const edges = [...c.edges].slice(0, 6);
+        const edgeLine = edges.length ? `\n    ↔ ${edges.join(' · ')}` : '';
+        return c.tag
+            ? `• ${c.name} — ${c.tag}${edgeLine}`
+            : `• ${c.name}${edgeLine}`;
+    };
+    const renderEntityLine = (e) => {
+        const edges = [...e.edges].slice(0, 4);
+        const edgeLine = edges.length ? `  (↔ ${edges.join(' · ')})` : '';
+        return e.tag ? `• ${e.name} — ${e.tag}${edgeLine}` : `• ${e.name}${edgeLine}`;
+    };
 
-    lines.push('(Specific details for each entity load via their own keys when mentioned.)');
-    return lines.join('\n');
+    const sections = [];
+    const pushSection = (heading, items, renderer) => {
+        if (!items.length) return;
+        sections.push(`[${heading}]`);
+        for (const it of items) sections.push(renderer(it));
+        sections.push('');
+    };
+
+    pushSection('MAIN CHARACTERS', chars.main, renderCharLine);
+    pushSection('SUPPORTING', chars.supporting, renderCharLine);
+    if (chars.minor.length) pushSection('MINOR / BACKGROUND', chars.minor, renderCharLine);
+
+    pushSection('LOCATIONS', types.location, renderEntityLine);
+    pushSection('FACTIONS', types.faction, renderEntityLine);
+    pushSection('CULTURES / RACES', types.culture, renderEntityLine);
+    pushSection('LANGUAGES', types.language, renderEntityLine);
+    pushSection('ITEMS', types.item, renderEntityLine);
+    pushSection('ABILITIES', types.ability, renderEntityLine);
+    pushSection('RANKS / TITLES', types.rank_title, renderEntityLine);
+
+    // Quests — split active vs dormant by disable flag.
+    const activeQuests = types.quest.filter(q => !q.disabled);
+    const dormantQuests = types.quest.filter(q => q.disabled);
+    pushSection('QUESTS — ACTIVE', activeQuests, renderEntityLine);
+    if (dormantQuests.length) pushSection('QUESTS — DORMANT', dormantQuests, renderEntityLine);
+
+    pushSection('EVENTS / HISTORY', types.event, renderEntityLine);
+    pushSection('DOCUMENTS', types.document, renderEntityLine);
+    pushSection('RECURRING SCENES', types.scene, renderEntityLine);
+    pushSection('RULES / WORLD FACTS', types.rule, renderEntityLine);
+    pushSection('CONCEPTS', types.concept, renderEntityLine);
+
+    if (sections.length === 0) return ''; // nothing to roster
+
+    const header = '## ACTIVE WORLD ROSTER (Card to Lorebook auto-generated — always loaded for AI awareness)';
+    const footer = '(Specific details for each entity load via their own keys when mentioned. ↔ marks cross-references.)';
+
+    let text = [header, '', ...sections, footer].join('\n').replace(/\n{3,}/g, '\n\n');
+
+    // Budget enforcement — if over cap, drop minor characters first, then
+    // dormant quests, then concepts, then events, etc. Repeat until fits.
+    const dropOrder = [
+        () => chars.minor.splice(0),
+        () => dormantQuests.splice(0),
+        () => types.concept.splice(0),
+        () => types.scene.splice(0),
+        () => types.event.splice(0),
+        () => types.document.splice(0),
+        () => types.language.splice(0),
+        () => types.culture.splice(0),
+        () => types.rank_title.splice(0),
+        () => types.ability.splice(0),
+    ];
+    let i = 0;
+    while (text.length > ROSTER_CHAR_BUDGET && i < dropOrder.length) {
+        dropOrder[i++]();
+        // re-render
+        const reRendered = [header, ''];
+        const reSections = [];
+        const re = (heading, items, renderer) => {
+            if (!items.length) return;
+            reSections.push(`[${heading}]`);
+            for (const it of items) reSections.push(renderer(it));
+            reSections.push('');
+        };
+        re('MAIN CHARACTERS', chars.main, renderCharLine);
+        re('SUPPORTING', chars.supporting, renderCharLine);
+        re('MINOR / BACKGROUND', chars.minor, renderCharLine);
+        re('LOCATIONS', types.location, renderEntityLine);
+        re('FACTIONS', types.faction, renderEntityLine);
+        re('CULTURES / RACES', types.culture, renderEntityLine);
+        re('LANGUAGES', types.language, renderEntityLine);
+        re('ITEMS', types.item, renderEntityLine);
+        re('ABILITIES', types.ability, renderEntityLine);
+        re('RANKS / TITLES', types.rank_title, renderEntityLine);
+        re('QUESTS — ACTIVE', activeQuests, renderEntityLine);
+        re('QUESTS — DORMANT', dormantQuests, renderEntityLine);
+        re('EVENTS / HISTORY', types.event, renderEntityLine);
+        re('DOCUMENTS', types.document, renderEntityLine);
+        re('RECURRING SCENES', types.scene, renderEntityLine);
+        re('RULES / WORLD FACTS', types.rule, renderEntityLine);
+        re('CONCEPTS', types.concept, renderEntityLine);
+        text = [...reRendered, ...reSections, footer].join('\n').replace(/\n{3,}/g, '\n\n');
+    }
+
+    return text;
 }
 
 /**
@@ -551,7 +713,6 @@ function buildRosterText(data) {
 function oneLineTag(content, maxChars = 50) {
     const s = String(content || '').replace(/^##.*$/gm, '').replace(/\s+/g, ' ').trim();
     if (!s) return '';
-    // First sentence or maxChars, whichever is shorter.
     const sentEnd = s.search(/[.!?]\s/);
     const cut = sentEnd > 0 ? s.slice(0, sentEnd) : s;
     if (cut.length <= maxChars) return cut;
@@ -596,6 +757,10 @@ export async function rebuildRoster(worldName) {
         useProbability: false,
         selectiveLogic: 0,
         depth: 4,
+        // The roster MUST survive token budget trimming; without it the AI
+        // loses awareness of the world.
+        ignoreBudget: true,
+        excludeRecursion: true,
     };
 
     if (existing) {
@@ -620,6 +785,67 @@ export async function rebuildRoster(worldName) {
         .length;
     log(`rebuildRoster(${worldName}) wrote roster covering ${entryCount} entries`);
     return { wrote: true, entryCount, target: worldName };
+}
+
+/* ============================================================
+ * Phase I — Base-world context loader for adaptive migration
+ * ============================================================ */
+
+/**
+ * Load a lorebook and extract its World Roster entry + all constant=true
+ * entries + entries whose keys match any token from the cardText.
+ *
+ * Returns null if the book doesn't exist.
+ *
+ * @param {string} worldName
+ * @param {string} cardText  the card prompt text — used to keyword-match relevant entries
+ * @param {object} [opts]  { maxRelevantEntries?: 8, maxConstantEntries?: 6 }
+ */
+export async function loadBaseLorebookContext(worldName, cardText, opts = {}) {
+    const maxRelevant = opts.maxRelevantEntries ?? 8;
+    const maxConst    = opts.maxConstantEntries ?? 6;
+    if (!worldName) return null;
+    if (!world_names?.includes(worldName)) return null;
+    const data = await loadOrInit(worldName);
+    if (!data?.entries) return null;
+
+    let roster = '';
+    const constantEntries = [];
+    const allEntries = [];
+
+    for (const entry of Object.values(data.entries)) {
+        const comment = String(entry?.comment || '').trim();
+        if (comment.startsWith(`[${ENTRY_STAMP_ROSTER}]`)) {
+            roster = String(entry.content || '');
+            continue;
+        }
+        if (entry.disable) continue;
+        const name = comment.replace(/^\[card2lore:[^\]]+\]\s*/i, '').split(' — ')[0].trim() || (entry.key?.[0] ?? 'Entry');
+        if (entry.constant && constantEntries.length < maxConst) {
+            constantEntries.push({ name, content: String(entry.content || '').slice(0, 400) });
+        }
+        allEntries.push({ name, content: String(entry.content || '').slice(0, 400), keys: entry.key || [] });
+    }
+
+    // Keyword match: find entries whose keys appear in the card text.
+    const cardLower = String(cardText || '').toLowerCase();
+    const matches = [];
+    for (const e of allEntries) {
+        if (constantEntries.some(c => c.name === e.name)) continue;
+        const hit = e.keys.some(k => {
+            const kk = String(k || '').toLowerCase();
+            return kk.length >= 3 && cardLower.includes(kk);
+        });
+        if (hit) matches.push(e);
+        if (matches.length >= maxRelevant) break;
+    }
+
+    return {
+        worldName,
+        roster,
+        constantEntries,
+        relevantEntries: matches,
+    };
 }
 
 export function openWorldInfoEditor(worldName) {

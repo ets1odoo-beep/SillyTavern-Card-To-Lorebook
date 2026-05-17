@@ -16,9 +16,8 @@ import { characters } from '/script.js';
 
 import { getCardByIndex, getEmbeddedBookEntries, hasExtractableContent, buildCardPromptText, preflightStats } from './cardExtractor.js';
 import { listProfiles, getProfile, getSelectedProfile, setSelectedProfile, settings } from './profiles.js';
-import { listAiConnectionProfiles } from './conversionEngine.js';
-import { convertOneCard } from './conversionEngine.js';
-import { listAllWorlds, commitEntries, makeCardStamp, makeEmbeddedStamp, makeEntityStamp, openWorldInfoEditor, rebuildRoster, removeStampedEntries } from './lorebookIO.js';
+import { listAiConnectionProfiles, convertOneCard, reprocessEmbeddedBook, looksPoorlyKeyed } from './conversionEngine.js';
+import { listAllWorlds, commitEntries, loadBaseLorebookContext, makeCardStamp, makeEmbeddedStamp, makeEntityStamp, openWorldInfoEditor, rebuildRoster, removeStampedEntries } from './lorebookIO.js';
 import { defaultLorebookName, estimateTokens, log, warn, err } from './core.js';
 
 const STEPS = ['source', 'profile', 'dest', 'preflight', 'progress', 'preview', 'done'];
@@ -56,6 +55,9 @@ function newWizardState(selectedIds) {
         },
         conflictPolicy: 'ask',
         wipeBeforeCommit: false,     // P1.12 redo-from-scratch toggle
+        adaptationSource: '',        // Phase I — base lorebook for adaptation (empty = no adaptation)
+        baseContextByCardName: {},   // cached base-world context per card (loaded lazily)
+        embeddedMode: 'auto',        // Phase D — verbatim | reprocess | auto
         queue: [],                   // [{ cardIdx, status, error, entries, t0, t1 }]
         embedded: [],                // [{ cardName, entries: [internalEntry, ...] }]
         previewRows: [],             // editable entries for step 6
@@ -194,10 +196,18 @@ function renderStepDest(state) {
         <div class="c2l-row">
             <label><span>Conflict policy (existing destinations only)</span>
                 <select id="c2l-conflict" class="text_pole">
+                    <option value="merge" ${state.conflictPolicy === 'merge' ? 'selected' : ''}>Merge (AI unions both)</option>
                     <option value="ask" ${state.conflictPolicy === 'ask' ? 'selected' : ''}>Ask per entry</option>
                     <option value="skip" ${state.conflictPolicy === 'skip' ? 'selected' : ''}>Skip (keep existing)</option>
                     <option value="overwrite" ${state.conflictPolicy === 'overwrite' ? 'selected' : ''}>Overwrite</option>
                     <option value="append" ${state.conflictPolicy === 'append' ? 'selected' : ''}>Append as new</option>
+                </select>
+            </label>
+            <label><span>Embedded character_book entries</span>
+                <select id="c2l-embedded-mode" class="text_pole">
+                    <option value="auto"      ${state.embeddedMode === 'auto'      ? 'selected' : ''}>Auto — re-process poorly-keyed books, verbatim otherwise</option>
+                    <option value="verbatim"  ${state.embeddedMode === 'verbatim'  ? 'selected' : ''}>Verbatim — import as-is</option>
+                    <option value="reprocess" ${state.embeddedMode === 'reprocess' ? 'selected' : ''}>Reprocess all via AI modular pipeline</option>
                 </select>
             </label>
         </div>
@@ -205,6 +215,15 @@ function renderStepDest(state) {
             <input id="c2l-wipe-before" type="checkbox" ${state.wipeBeforeCommit ? 'checked' : ''}>
             <span><b>Redo from scratch</b> — remove existing <code>[card2lore:*]</code> stamped entries from the target lorebook before committing. Hand-written entries are preserved.</span>
         </label>
+        <hr style="opacity:0.2">
+        <div class="c2l-row">
+            <label><span><b>Adaptive Migration</b> — adaptation source lorebook (optional). When set, AI rewrites cards' facts (profession / outfit / hobbies / location / etc.) to fit the chosen world while preserving core identity. Cross-references existing entities instead of duplicating.</span>
+                <select id="c2l-adapt-source" class="text_pole">
+                    <option value="">None — convert cards as-is</option>
+                    ${worlds.map(w => `<option value="${escapeHtml(w)}" ${state.adaptationSource === w ? 'selected' : ''}>${escapeHtml(w)}</option>`).join('')}
+                </select>
+            </label>
+        </div>
     `;
 }
 
@@ -376,7 +395,9 @@ function renderStepDone(state, result) {
             <span><b>${result?.written || 0}</b> written</span>
             <span>${result?.appended || 0} appended</span>
             <span>${result?.overwritten || 0} overwritten</span>
+            <span>${result?.merged || 0} merged via AI</span>
             <span>${result?.skipped || 0} skipped</span>
+            ${result?.mergeCallsUsed ? `<span style="opacity:0.7">(${result.mergeCallsUsed} AI merge calls)</span>` : ''}
         </div>
         <p class="c2l-hint">Click "Open lorebook" to inspect the entries in ST's World Info editor.</p>
     `;
@@ -435,6 +456,13 @@ function attachStepHandlers(state, refresh) {
         });
         root.querySelector('#c2l-wipe-before')?.addEventListener('change', (e) => {
             state.wipeBeforeCommit = e.target.checked;
+        });
+        root.querySelector('#c2l-adapt-source')?.addEventListener('change', (e) => {
+            state.adaptationSource = e.target.value || '';
+            state.baseContextByCardName = {}; // bust cache when source changes
+        });
+        root.querySelector('#c2l-embedded-mode')?.addEventListener('change', (e) => {
+            state.embeddedMode = e.target.value;
         });
     }
 
@@ -576,7 +604,23 @@ async function runQueue(state, refresh) {
             }
 
             try {
-                const entries = await convertOneCard(card, profile, signal);
+                // Phase I — load base-world context if adaptation is enabled.
+                let baseContext = null;
+                if (state.adaptationSource) {
+                    if (state.baseContextByCardName[card.name]) {
+                        baseContext = state.baseContextByCardName[card.name];
+                    } else {
+                        try {
+                            baseContext = await loadBaseLorebookContext(
+                                state.adaptationSource,
+                                buildCardPromptText(card, profile),
+                                { maxRelevantEntries: 8, maxConstantEntries: 6 },
+                            );
+                            state.baseContextByCardName[card.name] = baseContext;
+                        } catch (e) { warn('loadBaseLorebookContext failed', e); }
+                    }
+                }
+                const entries = await convertOneCard(card, profile, signal, baseContext);
                 for (const entry of entries) {
                     const origin = entry._origin || {};
                     if (origin.source === 'entity') {
@@ -693,8 +737,9 @@ function ensureKeyPresent(entry, name) {
     }
 }
 
-function buildPreviewRows(state) {
+async function buildPreviewRows(state) {
     const rows = [];
+    const profile = getProfile(state.profileId);
 
     // AI-generated entries (one in flat mode, many in modular/world-kit mode).
     for (let i = 0; i < state.queue.length; i++) {
@@ -736,9 +781,44 @@ function buildPreviewRows(state) {
         }
     }
 
-    // Embedded character_book entries.
+    // Embedded character_book entries — verbatim, reprocess via AI, or auto-detect.
+    const mode = state.embeddedMode || 'auto';
     for (const { card } of state.cards) {
         const embedded = getEmbeddedBookEntries(card);
+        if (embedded.length === 0) continue;
+        const shouldReprocess = mode === 'reprocess'
+            || (mode === 'auto' && looksPoorlyKeyed(embedded));
+        if (shouldReprocess) {
+            try {
+                const reprocessed = await reprocessEmbeddedBook(embedded, card, profile);
+                for (const r of reprocessed) {
+                    const sectionLabel = r._origin?.sectionLabel || '';
+                    r.comment = sectionLabel
+                        ? makeCardStamp(card.name, '', sectionLabel)
+                        : makeCardStamp(card.name, profile.name);
+                    rows.push({
+                        kind: `embedded → ${sectionLabel || 'card'}`,
+                        cardName: card.name,
+                        comment: r.comment,
+                        keys: r.keys || [],
+                        secondaryKeys: r.secondaryKeys || [],
+                        content: r.content,
+                        constant: !!r.constant,
+                        selective: r.selective !== false,
+                        order: r.order,
+                        position: r.position,
+                        probability: r.probability ?? 100,
+                        useProbability: !!r.useProbability,
+                        _origin: r._origin,
+                        dropped: false,
+                    });
+                }
+                continue;
+            } catch (e) {
+                warn(`embedded reprocess for "${card.name}" failed, falling back to verbatim`, e);
+            }
+        }
+        // Verbatim path (default or fallback).
         for (const e of embedded) {
             rows.push({
                 kind: 'embedded',
@@ -878,7 +958,7 @@ export async function openWizard(selectedIds) {
                         await runQueue(state, refresh);
                     } finally {
                         // Auto-advance to preview when queue completes.
-                        state.previewRows = buildPreviewRows(state);
+                        state.previewRows = await buildPreviewRows(state);
                         state.currentStep = 'preview';
                         refresh();
                         try {
@@ -930,7 +1010,10 @@ export async function openWizard(selectedIds) {
                                 }
                             }
                         }
-                        commitResult = await commitEntries(state.destination, entries, state.conflictPolicy);
+                        commitResult = await commitEntries(
+                            state.destination, entries, state.conflictPolicy,
+                            { mergeProfile: getProfile(state.profileId), mergeMaxAiCalls: Number(getProfile(state.profileId)?.mergeMaxAiCalls) || 20 },
+                        );
 
                         // Auto-rebuild the roster entry (constant=true table-of-
                         // contents that lists every card2lore-stamped entity so
