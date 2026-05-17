@@ -195,6 +195,21 @@ EXTRACTION RULES — STRICT
 - LINK related entities via the optional "linkedTo" array on any entry. E.g. character "Marah" with linkedTo=["Vaaj Church", "Vaaj Temple"]. Used to build the roster's cross-reference graph.
 
 ================================================================================
+OMISSION & INFERENCE POLICY — read carefully
+================================================================================
+
+OMISSION RULE (hard): if a section or entity would only contain placeholder / disclaimer text — "not specified", "unknown", "to be defined", "not yet established", "not stated in the card", "details unclear", or any similar meta-comment — DO NOT emit it. Drop the section entirely. Empty / disclaimer entries are pure token waste at runtime and pollute retrieval. An omitted section is ALWAYS better than a section that admits it has nothing to say.
+
+This applies to every section AND every otherEntity. If you wouldn't trust the entry to fire usefully mid-roleplay, don't emit it.
+
+INFERENCE POLICY for the primary character's anchor / appearance / personality / voice:
+- These four sections define the character's basic identity. Cards almost always provide enough to write substantive content even when details aren't itemised.
+- If the card lacks an explicit appearance section but mentions species, role, setting, or shows the character in scenarios/dialogue, INFER a plausible appearance from those signals — name connotation, genre, tags, scenario, persona descriptions, example messages. Make confident creative choices grounded in the card's vibe (medieval/sci-fi/modern/etc).
+- Same for personality and voice — if the card shows behaviour through scenarios and dialogue, write the trait/voice section from those observations rather than admitting "not stated".
+- DO NOT write meta-disclaimers like "appearance not established", "personality to be defined through play", "voice details unclear". Those defeat the purpose of a lorebook entry. Either write substantive inferred content or invoke the OMISSION RULE and drop the section.
+- For OTHER entities (locations, items, factions, etc.): be stricter — only emit when the card actually mentions the entity. Don't invent locations / factions / quests the card never references.
+
+================================================================================
 CONTENT CONSTRAINTS
 ================================================================================
 
