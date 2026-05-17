@@ -52,15 +52,30 @@ export function buildCardPromptText(card, profile) {
     const include = profile?.includeFields ?? {};
     const blocks = [];
 
-    blocks.push(block('Card name', card.name));
+    blocks.push(block('Card name', card.name || card.data?.name));
 
     for (const f of CARD_FIELDS) {
         if (include[f.key] === false) continue;
-        const value =
-            f.key === 'tags' ? (card.tags || card.data?.tags || []) :
-            f.key === 'alternate_greetings' ? (card.alternate_greetings || card.data?.alternate_greetings || []) :
-            card[f.key] ?? card.data?.[f.key];
-        const text = fieldToString(value);
+        // V2 cards store fields at card.data.*; legacy V1 keeps top-level
+        // mirrors that may be EMPTY STRINGS (not undefined). The previous
+        // `??` fallback skipped the V2 path on empty strings → only Tags
+        // got through for chub V2 cards. Compare both and pick the
+        // longer / non-empty value.
+        const top = fieldToString(card[f.key]);
+        const v2  = fieldToString(card.data?.[f.key]);
+        let text = v2.length >= top.length ? v2 : top;
+        // Tags and alternate_greetings are arrays; serialise consistently.
+        if (f.key === 'tags') {
+            const tagsTop = Array.isArray(card.tags) ? card.tags : [];
+            const tagsV2  = Array.isArray(card.data?.tags) ? card.data.tags : [];
+            const tags = tagsV2.length >= tagsTop.length ? tagsV2 : tagsTop;
+            text = fieldToString(tags);
+        } else if (f.key === 'alternate_greetings') {
+            const altTop = Array.isArray(card.alternate_greetings) ? card.alternate_greetings : [];
+            const altV2  = Array.isArray(card.data?.alternate_greetings) ? card.data.alternate_greetings : [];
+            const alts = altV2.length >= altTop.length ? altV2 : altTop;
+            text = fieldToString(alts);
+        }
         if (!text) continue;
         blocks.push(block(f.label, text));
     }
