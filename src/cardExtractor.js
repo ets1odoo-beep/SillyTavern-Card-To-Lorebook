@@ -51,18 +51,21 @@ export function buildCardPromptText(card, profile) {
     if (!card || typeof card !== 'object') return '';
     const include = profile?.includeFields ?? {};
     const blocks = [];
+    const diag = []; // per-field diagnostic for short-output warning
 
     blocks.push(block('Card name', card.name || card.data?.name));
 
     for (const f of CARD_FIELDS) {
-        if (include[f.key] === false) continue;
+        if (include[f.key] === false) { diag.push(`${f.key}=OFF`); continue; }
         // V2 cards store fields at card.data.*; legacy V1 keeps top-level
         // mirrors that may be EMPTY STRINGS (not undefined). The previous
         // `??` fallback skipped the V2 path on empty strings → only Tags
         // got through for chub V2 cards. Compare both and pick the
         // longer / non-empty value.
-        const top = fieldToString(card[f.key]);
-        const v2  = fieldToString(card.data?.[f.key]);
+        let topRaw = card[f.key];
+        let v2Raw  = card.data?.[f.key];
+        const top = fieldToString(topRaw);
+        const v2  = fieldToString(v2Raw);
         let text = v2.length >= top.length ? v2 : top;
         // Tags and alternate_greetings are arrays; serialise consistently.
         if (f.key === 'tags') {
@@ -76,11 +79,33 @@ export function buildCardPromptText(card, profile) {
             const alts = altV2.length >= altTop.length ? altV2 : altTop;
             text = fieldToString(alts);
         }
+        diag.push(`${f.key}=top:${top.length}/v2:${v2.length}/used:${text.length}`);
         if (!text) continue;
         blocks.push(block(f.label, text));
     }
 
-    return blocks.filter(Boolean).join('\n\n').trim();
+    const out = blocks.filter(Boolean).join('\n\n').trim();
+
+    // Diagnostic: if the output is suspiciously short (<400 chars after the
+    // name + tag boilerplate) something dropped on the floor — log what was
+    // available so the user can see the problem in the console. Always log,
+    // not gated on debug flag, since this is the #1 cause of "thin output"
+    // reports and we want users to be able to file actionable bug reports.
+    if (out.length < 400) {
+        try {
+            // Use console directly so it survives ST log filters.
+            console.warn('[Card2Lore] WARNING: card "%s" produced very short prompt text (%d chars). Field diagnostic: %s',
+                card?.name || card?.data?.name || '?', out.length, diag.join(' | '));
+            console.warn('[Card2Lore] card object shape — top-level keys:', Object.keys(card || {}).join(', '));
+            console.warn('[Card2Lore] card.data keys:', Object.keys(card?.data || {}).join(', '));
+            // Sample first 200 chars of each candidate description path so user
+            // can see if data exists somewhere we're not reading.
+            console.warn('[Card2Lore] card.description sample:', String(card?.description || '').slice(0, 200));
+            console.warn('[Card2Lore] card.data?.description sample:', String(card?.data?.description || '').slice(0, 200));
+        } catch (e) {}
+    }
+
+    return out;
 }
 
 /**
