@@ -351,8 +351,17 @@ export async function convertOneCard(card, profile, signal, baseContext = null) 
     const importanceHint = detectImportance(card);
     const { systemPrompt, userPrompt } = buildPrompt(profile, cardText, importanceHint, baseContext);
     const modular = profile.entrySplitMode === 'modular';
-    const schema = profile.outputFormat === 'json'
+    // ST's chat-completions backend expects the json_schema envelope
+    // { name, description, value, strict } — not the bare schema object.
+    // Passing the schema directly (as we did pre-beta.21) produced a request
+    // with json_schema: { name: undefined, strict: true, schema: undefined }
+    // which silently bypassed structured output and gave the model no
+    // schema constraint. Wrap it properly here.
+    const rawSchema = profile.outputFormat === 'json'
         ? (modular ? MODULAR_JSON_SCHEMA : FLAT_JSON_SCHEMA)
+        : null;
+    const schema = rawSchema
+        ? { name: modular ? 'world_kit_modular' : 'lorebook_entry_flat', value: rawSchema, strict: false }
         : null;
 
     // Switch connection profile if the profile binds one. Restore after.
