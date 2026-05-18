@@ -781,7 +781,15 @@ export async function rebuildRoster(worldName) {
         // The roster MUST survive token budget trimming; without it the AI
         // loses awareness of the world.
         ignoreBudget: true,
+        // excludeRecursion: nothing else can trigger the roster (it's already
+        //   constant=true so it always fires anyway — belt-and-braces).
+        // preventRecursion: when the roster fires, its content does NOT
+        //   trigger cascading activation of every entry whose key matches a
+        //   name in the roster. Without this flag, an always-on roster that
+        //   lists every entity name would fire every entry every turn,
+        //   destroying token budget and the point of selective routing.
         excludeRecursion: true,
+        preventRecursion: true,
     };
 
     if (existing) {
@@ -795,6 +803,11 @@ export async function rebuildRoster(worldName) {
         old.position = 0;
         old.probability = 100;
         old.useProbability = false;
+        // Force the recursion flags on rebuild — rosters created by earlier
+        // betas lacked preventRecursion and were cascade-triggering every
+        // matched entry every turn. Always re-apply on rebuild.
+        old.excludeRecursion = true;
+        old.preventRecursion = true;
     } else {
         addEntryToData(data, rosterEntryData);
     }
